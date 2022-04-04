@@ -116,7 +116,7 @@ class Channel(dj.Lookup):
 class Scan(dj.Manual):
     definition = """    
     -> Session
-    scan_id: int        
+    scan_id: varchar(12)        
     ---
     -> Equipment  
     -> AcquisitionSoftware  

@@ -189,7 +189,8 @@ class ScanInfo(dj.Imported):
 
     def make(self, key):
         """ Read and store some scan meta information."""
-        acq_software = (Scan & key).fetch1('acq_software')
+        acq_software = (Scan & f'scan_id = {key}').fetch1('acq_software')
+        scan_filepaths = (ScanPath & f'scan_id = {key}').fetch1('path')
 
         if acq_software == 'ScanImage':
             import scanreader

@@ -6,7 +6,9 @@ import datajoint as dj
 import pathlib
 import importlib
 import inspect
+from element_session import session_with_id
 from . import find_root_directory
+
 
 schema = dj.schema()
 
@@ -72,12 +74,15 @@ def get_imaging_root_data_dir() -> str:
     return _linking_module.get_imaging_root_data_dir()
 
 
-def get_scan_image_files(scan_key: dict) -> list:
+def get_scan_image_files(scan_key: list) -> list:
     """
     Retrieve the list of ScanImage files associated with a given Scan
     :param scan_key: key of a Scan
     :return: list of ScanImage files' full file-paths
     """
+    output = []
+    for sk in scan_key:
+        sess_dir_query = session_with_id.SessionDirectory & f"session_id = '{sk}'"
     return _linking_module.get_scan_image_files(scan_key)
 
 
@@ -121,6 +126,14 @@ class Scan(dj.Manual):
     -> Equipment  
     -> AcquisitionSoftware  
     scan_notes='' : varchar(4095)         # free-notes
+    """
+    
+@schema
+class ScanPath(dj.Manual):
+    definition = """
+    -> SessionUser
+    ---
+    path: varchar(300)
     """
 
 

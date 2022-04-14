@@ -127,7 +127,8 @@ class Scan(dj.Manual):
     -> AcquisitionSoftware  
     scan_notes='' : varchar(4095)         # free-notes
     """
-    
+
+
 @schema
 class ScanPath(dj.Manual):
     definition = """
@@ -189,8 +190,8 @@ class ScanInfo(dj.Imported):
 
     def make(self, key):
         """ Read and store some scan meta information."""
-        acq_software = (Scan & f'scan_id = {key}').fetch1('acq_software')
-        scan_filepaths = (ScanPath & f'scan_id = {key}').fetch1('path')
+        acq_software = (Scan & key).fetch1('acq_software')
+        scan_filepaths = (ScanPath & key).fetch1('path')
 
         if acq_software == 'ScanImage':
             import scanreader
@@ -199,7 +200,13 @@ class ScanInfo(dj.Imported):
             scan = scanreader.read_scan(scan_filepaths)
 
             # Insert in ScanInfo
-            x_zero, y_zero, z_zero = scan.motor_position_at_zero  # motor x, y, z at ScanImage's 0
+            try:  # motor x, y, z at ScanImage's 0
+                x_zero, y_zero, z_zero = scan.motor_position_at_zero
+            # CB DEV NOTE: Demo file does not provide 0-position.
+            #              Because calculations rely on these, set to 0, else TypeError.
+            #               TODO: set to None to be more transparent about missingness
+            except TypeError:
+                x_zero, y_zero, z_zero = 0, 0, 0
             self.insert1(dict(key,
                               nfields=scan.num_fields,
                               nchannels=scan.num_channels,

@@ -7,7 +7,11 @@ import pathlib
 import importlib
 import inspect
 from element_session import session_with_id
+from adamacs.schemas import subject
 from . import find_root_directory
+import scanreader
+import pdb
+
 
 
 schema = dj.schema()
@@ -74,17 +78,21 @@ def get_imaging_root_data_dir() -> str:
     return _linking_module.get_imaging_root_data_dir()
 
 
-def get_scan_image_files(scan_key: list) -> list:
+def get_scan_image_file(scan_key: str) -> str:
     """
     Retrieve the list of ScanImage files associated with a given Scan
     :param scan_key: key of a Scan
     :return: list of ScanImage files' full file-paths
     """
-    output = []
-    for sk in scan_key:
-        sess_dir_query = session_with_id.SessionDirectory & f"session_id = '{sk}'"
-    return _linking_module.get_scan_image_files(scan_key)
 
+    scanpath = (ScanPath & f"scan_id = '{scan_key}'").fetch1('path')
+    scanpath = pathlib.Path(scanpath)
+    fpath = [x for x in scanpath.iterdir() if x.is_file() and '.tif' in x.name]
+    if len(fpath) < 0:
+        raise ValueError(f"No .tif file found in {scan_key}")
+    elif len(fpath) > 1:
+        raise ValueError(f"More than one .tif file found in {scan_key}")
+    return str(fpath[0])
 
 def get_scan_box_files(scan_key: dict) -> list:
     """
@@ -131,7 +139,8 @@ class Scan(dj.Manual):
 @schema
 class ScanPath(dj.Manual):
     definition = """
-    -> SessionUser
+    -> Scan
+    -> subject.User
     ---
     path: varchar(300)
     """
@@ -189,18 +198,23 @@ class ScanInfo(dj.Imported):
 
     def make(self, key):
         """ Read and store some scan meta information."""
-        acq_software = (Scan & f'scan_id = {key}').fetch1('acq_software')
-        scan_filepaths = (ScanPath & f'scan_id = {key}').fetch1('path')
+        acq_software = (Scan & f"scan_id = '{key}'").fetch1('acq_software')
+        session_id = (Scan & f"scan_id = '{key}'").fetch1('session_id')
 
         if acq_software == 'ScanImage':
-            import scanreader
             # Read the scan
-            scan_filepaths = get_scan_image_files(key)
-            scan = scanreader.read_scan(scan_filepaths)
+            scan_filepath = get_scan_image_file(key)
+            print(type(scan_filepath), scan_filepath)
 
+            scan = scanreader.read_scan(scan_filepath)
             # Insert in ScanInfo
-            x_zero, y_zero, z_zero = scan.motor_position_at_zero  # motor x, y, z at ScanImage's 0
-            self.insert1(dict(key,
+            if bool(scan.motor_position_at_zero):
+                x_zero, y_zero, z_zero = scan.motor_position_at_zero  # motor x, y, z at ScanImage's 0
+            else:
+                x_zero = y_zero = z_zero = 0
+
+            self.insert1(dict(session_id=session_id,
+                              scan_id=key,
                               nfields=scan.num_fields,
                               nchannels=scan.num_channels,
                               nframes=scan.num_frames,
@@ -212,12 +226,14 @@ class ScanInfo(dj.Imported):
                               bidirectional=scan.is_bidirectional,
                               usecs_per_line=scan.seconds_per_line * 1e6,
                               fill_fraction=scan.temporal_fill_fraction,
-                              nrois=scan.num_rois if scan.is_multiROI else 0))
+                              nrois=scan.num_rois if scan.is_multiROI else 0),
+                         allow_direct_insert=True)
 
             # Insert Field(s)
             if scan.is_multiROI:
                 self.Field.insert([
-                    dict(key,
+                    dict(session_id=session_id,
+                         scan_id=key,
                          field_idx=field_id,
                          px_height=scan.field_heights[field_id],
                          px_width=scan.field_widths[field_id],
@@ -231,7 +247,8 @@ class ScanInfo(dj.Imported):
                     for field_id in range(scan.num_fields)])
             else:
                 self.Field.insert([
-                    dict(key,
+                    dict(session_id=session_id,
+                         scan_id=key,
                          field_idx=plane_idx,
                          px_height=scan.image_height,
                          px_width=scan.image_width,
@@ -289,7 +306,4 @@ class ScanInfo(dj.Imported):
                 f'Loading routine not implemented for {acq_software} acquisition software')
 
         # Insert file(s)
-        root_dir = find_root_directory(get_imaging_root_data_dir(), scan_filepaths[0])
-
-        scan_files = [pathlib.Path(f).relative_to(root_dir).as_posix() for f in scan_filepaths]
-        self.ScanFile.insert([{**key, 'file_path': f} for f in scan_files])
+        self.ScanFile.insert1((session_id, key, scan_filepath))

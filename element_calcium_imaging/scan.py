@@ -141,8 +141,9 @@ class ScanPath(dj.Manual):
     definition = """
     -> Scan
     -> subject.User
-    ---
     path: varchar(300)
+    ---
+
     """
 
 

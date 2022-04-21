@@ -161,7 +161,8 @@ class Scan(dj.Manual):
     -> AcquisitionSoftware  
     scan_notes='' : varchar(4095)         # free-notes
     """
-    
+
+
 @schema
 class ScanPath(dj.Manual):
     definition = """
@@ -237,6 +238,8 @@ class ScanInfo(dj.Imported):
     def make(self, key):
         """ Read and store some scan meta information."""
         acq_software = (Scan & key).fetch1('acq_software')
+        scan_filepaths = (ScanPath & key).fetch1('path')
+    
         if acq_software == 'ScanImage':
             # Read the scan
             scan_filepath = get_scan_image_file(key)
@@ -244,6 +247,7 @@ class ScanInfo(dj.Imported):
 
             scan = scanreader.read_scan(scan_filepath)
             # Insert in ScanInfo
+
             x_zero = scan.motor_position_at_zero[0] \
                         if scan.motor_position_at_zero else None
             y_zero = scan.motor_position_at_zero[1] \

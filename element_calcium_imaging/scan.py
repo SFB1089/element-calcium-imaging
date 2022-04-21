@@ -1,21 +1,21 @@
-"""
-ScanImage scans
-"""
-
 import datajoint as dj
 import pathlib
 import importlib
 import inspect
 from element_session import session_with_id
+from adamacs.schemas import subject
 from . import find_root_directory
-
+import scanreader
+import pdb
+from element_interface.utils import find_root_directory, find_full_path
 
 schema = dj.schema()
 
 _linking_module = None
 
 
-def activate(scan_schema_name, *, create_schema=True, create_tables=True, linking_module=None):
+def activate(scan_schema_name, *,
+             create_schema=True, create_tables=True, linking_module=None):
     """
     activate(scan_schema_name, *, create_schema=True, create_tables=True, linking_module=None)
         :param scan_schema_name: schema name on the database server to activate the `scan` module
@@ -39,6 +39,9 @@ def activate(scan_schema_name, *, create_schema=True, create_tables=True, linkin
                     Retrieve the list of Scanbox files (*.sbx) associated with a given Scan
                     :param scan_key: key of a Scan
                     :return: list of Scanbox files' full file-paths
+                + get_processed_root_data_dir() -> str:
+                    Retrieves the root directory for all processed data to be found from or written to
+                    :return: a string for full path to the root directory for processed data
     """
 
     if isinstance(linking_module, str):
@@ -49,13 +52,13 @@ def activate(scan_schema_name, *, create_schema=True, create_tables=True, linkin
     global _linking_module
     _linking_module = linking_module
 
-    # activate
-    schema.activate(scan_schema_name, create_schema=create_schema,
-                    create_tables=create_tables, add_objects=_linking_module.__dict__)
+    schema.activate(scan_schema_name, 
+                    create_schema=create_schema,
+                    create_tables=create_tables, 
+                    add_objects=_linking_module.__dict__)
 
 
-# -------------- Functions required by the element-calcium-imaging  ---------------
-
+# Functions required by element-calcium-imaging  -------------------------------
 
 def get_imaging_root_data_dir() -> str:
     """
@@ -71,20 +74,45 @@ def get_imaging_root_data_dir() -> str:
         :return: a string for full path to the imaging root data directory,
          or list of strings for possible root data directories
     """
-    return _linking_module.get_imaging_root_data_dir()
+
+    root_directories = _linking_module.get_imaging_root_data_dir()
+    if isinstance(root_directories, (str, pathlib.Path)):
+        root_directories = [root_directories]
+
+    if hasattr(_linking_module, 'get_processed_root_data_dir'):
+        root_directories.append(_linking_module.get_processed_root_data_dir())
+
+    return root_directories
 
 
-def get_scan_image_files(scan_key: list) -> list:
+def get_processed_root_data_dir() -> str:
+    """
+    get_processed_root_data_dir() -> str:
+        Retrieves the root directory for all processed data to be found from or written to
+        :return: a string for full path to the root directory for processed data
+    """
+
+    if hasattr(_linking_module, 'get_processed_root_data_dir'):
+        return _linking_module.get_processed_root_data_dir()
+    else:
+        return get_imaging_root_data_dir()[0]
+
+
+def get_scan_image_file(scan_key: str) -> str:
     """
     Retrieve the list of ScanImage files associated with a given Scan
     :param scan_key: key of a Scan
     :return: list of ScanImage files' full file-paths
     """
-    output = []
-    for sk in scan_key:
-        sess_dir_query = session_with_id.SessionDirectory & f"session_id = '{sk}'"
-    return _linking_module.get_scan_image_files(scan_key)
 
+    scanpath = (ScanPath & f"scan_id = '{scan_key}'").fetch1('path')
+    scanpath = pathlib.Path(scanpath)
+    fpath = [x for x in scanpath.iterdir() if x.is_file() and '.tif' in x.name]
+    if len(fpath) < 0:
+        raise ValueError(f"No .tif file found in {scan_key}")
+    elif len(fpath) > 1:
+        raise ValueError(f"More than one .tif file found in {scan_key}")
+    return str(fpath[0])
 
 def get_scan_box_files(scan_key: dict) -> list:
     """
@@ -95,15 +123,24 @@ def get_scan_box_files(scan_key: dict) -> list:
     return _linking_module.get_scan_box_files(scan_key)
 
 
+def get_nd2_files(scan_key: dict) -> list:
+    """
+    Retrieve the list of Nikon files (*.nd2) associated with a given Scan
+    :param scan_key: key of a Scan
+    :return: list of Nikon files' full file-paths
+    """
+    return _linking_module.get_nd2_files(scan_key)
+
+
 # ----------------------------- Table declarations ----------------------
 
 
 @schema
 class AcquisitionSoftware(dj.Lookup):
-    definition = """  # Name of acquisition software - e.g. ScanImage, Scanbox
+    definition = """  # Name of acquisition software - e.g. ScanImage, Scanbox, NIS
     acq_software: varchar(24)    
     """
-    contents = zip(['ScanImage', 'Scanbox'])
+    contents = zip(['ScanImage', 'Scanbox', 'NIS'])
 
 
 @schema
@@ -114,16 +151,13 @@ class Channel(dj.Lookup):
     contents = zip(range(5))
 
 
-# ------------ ScanImage's scan ------------
-
-
 @schema
 class Scan(dj.Manual):
     definition = """    
     -> Session
     scan_id: varchar(12)        
     ---
-    -> Equipment  
+    -> [nullable] Equipment  
     -> AcquisitionSoftware  
     scan_notes='' : varchar(4095)         # free-notes
     """
@@ -132,9 +166,11 @@ class Scan(dj.Manual):
 @schema
 class ScanPath(dj.Manual):
     definition = """
-    -> SessionUser
-    ---
+    -> Scan
+    -> subject.User
     path: varchar(300)
+    ---
+
     """
 
 
@@ -149,7 +185,7 @@ class ScanLocation(dj.Manual):
 
 @schema
 class ScanInfo(dj.Imported):
-    definition = """ # general data about the reso/meso scans, from ScanImage header
+    definition = """ # general data about the reso/meso scans from header
     -> Scan
     ---
     nfields              : tinyint   # number of fields
@@ -157,13 +193,15 @@ class ScanInfo(dj.Imported):
     ndepths              : int       # Number of scanning depths (planes)
     nframes              : int       # number of recorded frames
     nrois                : tinyint   # number of ROIs (see scanimage's multi ROI imaging)
-    x                    : float     # (um) ScanImage's 0 point in the motor coordinate system
-    y                    : float     # (um) ScanImage's 0 point in the motor coordinate system
-    z                    : float     # (um) ScanImage's 0 point in the motor coordinate system
+    x=null               : float     # (um) ScanImage's 0 point in the motor coordinate system
+    y=null               : float     # (um) ScanImage's 0 point in the motor coordinate system
+    z=null               : float     # (um) ScanImage's 0 point in the motor coordinate system
     fps                  : float     # (Hz) frames per second - Volumetric Scan Rate 
     bidirectional        : boolean   # true = bidirectional scanning
     usecs_per_line=null  : float     # microseconds per scan line
     fill_fraction=null   : float     # raster scan temporal fill fraction (see scanimage)
+    scan_datetime=null   : datetime  # datetime of the scan
+    scan_duration=null   : float     # (seconds) duration of the scan
     """
 
     class Field(dj.Part):
@@ -175,9 +213,9 @@ class ScanInfo(dj.Imported):
         px_width          : smallint  # width in pixels
         um_height=null    : float     # height in microns
         um_width=null     : float     # width in microns
-        field_x           : float     # (um) center of field in the motor coordinate system
-        field_y           : float     # (um) center of field in the motor coordinate system
-        field_z           : float     # (um) relative depth of field
+        field_x=null      : float     # (um) center of field in the motor coordinate system
+        field_y=null      : float     # (um) center of field in the motor coordinate system
+        field_z=null      : float     # (um) relative depth of field
         delay_image=null  : longblob  # (ms) delay between the start of the scan and pixels in this field
         roi=null          : int       # the scanning roi (as recorded in the acquisition software) containing this field - only relevant to mesoscale scans
         """
@@ -188,25 +226,35 @@ class ScanInfo(dj.Imported):
         file_path: varchar(255)  # filepath relative to root data directory
         """
 
+    @staticmethod
+    def estimate_scan_duration(scan_obj):
+        # Calculates scan duration for Nikon images
+        ti = scan_obj.frame_metadata(0).channels[0].time.absoluteJulianDayNumber  # Initial frame's JD.
+        tf = scan_obj.frame_metadata(scan_obj.shape[0]-1).channels[0].time.absoluteJulianDayNumber  # Final frame's JD.
+        fps = 1000 / scan_obj.experiment[0].parameters.periods[0].periodDiff.avg  # Frame per second
+        return (tf - ti) * 86400 + 1 / fps
+
+
     def make(self, key):
         """ Read and store some scan meta information."""
         acq_software = (Scan & key).fetch1('acq_software')
         scan_filepaths = (ScanPath & key).fetch1('path')
-
+    
         if acq_software == 'ScanImage':
-            import scanreader
             # Read the scan
-            scan_filepaths = get_scan_image_files(key)
-            scan = scanreader.read_scan(scan_filepaths)
+            scan_filepath = get_scan_image_file(key)
+            print(type(scan_filepath), scan_filepath)
 
+            scan = scanreader.read_scan(scan_filepath)
             # Insert in ScanInfo
-            try:  # motor x, y, z at ScanImage's 0
-                x_zero, y_zero, z_zero = scan.motor_position_at_zero
-            # CB DEV NOTE: Demo file does not provide 0-position.
-            #              Because calculations rely on these, set to 0, else TypeError.
-            #               TODO: set to None to be more transparent about missingness
-            except TypeError:
-                x_zero, y_zero, z_zero = 0, 0, 0
+
+            x_zero = scan.motor_position_at_zero[0] \
+                        if scan.motor_position_at_zero else None
+            y_zero = scan.motor_position_at_zero[1] \
+                        if scan.motor_position_at_zero else None
+            z_zero = scan.motor_position_at_zero[2] \
+                        if scan.motor_position_at_zero else None
+            
             self.insert1(dict(key,
                               nfields=scan.num_fields,
                               nchannels=scan.num_channels,
@@ -219,34 +267,40 @@ class ScanInfo(dj.Imported):
                               bidirectional=scan.is_bidirectional,
                               usecs_per_line=scan.seconds_per_line * 1e6,
                               fill_fraction=scan.temporal_fill_fraction,
-                              nrois=scan.num_rois if scan.is_multiROI else 0))
-
+                              nrois=scan.num_rois if scan.is_multiROI else 0,
+                              scan_duration=scan.num_frames / scan.fps))
             # Insert Field(s)
             if scan.is_multiROI:
                 self.Field.insert([
-                    dict(key,
+                    dict(session_id=session_id,
+                         scan_id=key,
                          field_idx=field_id,
                          px_height=scan.field_heights[field_id],
                          px_width=scan.field_widths[field_id],
                          um_height=scan.field_heights_in_microns[field_id],
                          um_width=scan.field_widths_in_microns[field_id],
-                         field_x=x_zero + scan._degrees_to_microns(scan.fields[field_id].x),
-                         field_y=y_zero + scan._degrees_to_microns(scan.fields[field_id].y),
-                         field_z=z_zero + scan.fields[field_id].depth,
+                         field_x=x_zero + scan._degrees_to_microns(scan.fields[field_id].x) \
+                                    if x_zero else None,
+                         field_y=y_zero + scan._degrees_to_microns(scan.fields[field_id].y) \
+                                    if y_zero else None,
+                         field_z=z_zero + scan.fields[field_id].depth \
+                                    if z_zero else None,
                          delay_image=scan.field_offsets[field_id],
                          roi=scan.field_rois[field_id][0])
                     for field_id in range(scan.num_fields)])
             else:
                 self.Field.insert([
-                    dict(key,
+                    dict(session_id=session_id,
+                         scan_id=key,
                          field_idx=plane_idx,
                          px_height=scan.image_height,
                          px_width=scan.image_width,
                          um_height=getattr(scan, 'image_height_in_microns', None),
                          um_width=getattr(scan, 'image_width_in_microns', None),
-                         field_x=x_zero,
-                         field_y=y_zero,
-                         field_z=z_zero + scan.scanning_depths[plane_idx],
+                         field_x=x_zero if x_zero else None,
+                         field_y=y_zero if y_zero else None,
+                         field_z=z_zero + scan.scanning_depths[plane_idx] \
+                                    if z_zero else None,
                          delay_image=scan.field_offsets[plane_idx])
                     for plane_idx in range(scan.num_scanning_depths)])
         elif acq_software == 'Scanbox':
@@ -274,7 +328,8 @@ class ScanInfo(dj.Imported):
                               z=z_zero,
                               fps=sbx_meta['frame_rate'],
                               bidirectional=sbx_meta == 'bidirectional',
-                              nrois=sbx_meta['num_rois'] if is_multiROI else 0))
+                              nrois=sbx_meta['num_rois'] if is_multiROI else 0,
+                              scan_duration=(sbx_meta['num_frames'] / sbx_meta['frame_rate'])))
             # Insert Field(s)
             if not is_multiROI:
                 px_width, px_height = sbx_meta['frame_size']
@@ -290,13 +345,50 @@ class ScanInfo(dj.Imported):
                                         field_y=y_zero,
                                         field_z=z_zero + sbx_meta['etl_pos'][plane_idx])
                                    for plane_idx in range(sbx_meta['num_planes'])])
+        elif acq_software == 'NIS':
+            import nd2
+            # Read the scan
+            scan_filepaths = get_nd2_files(key)
+            nd2_file = nd2.ND2File(scan_filepaths[0])
+            is_multiROI = False  # MultiROI to be implemented later
 
+            # Insert in ScanInfo
+            self.insert1(dict(key,
+                              nfields=nd2_file.sizes.get('P', 1),
+                              nchannels=nd2_file.attributes.channelCount,
+                              nframes=nd2_file.metadata.contents.frameCount,
+                              ndepths=nd2_file.sizes.get('Z', 1),
+                              x=None,
+                              y=None,
+                              z=None,
+                              fps=1000 / nd2_file.experiment[0].parameters.periods[0].periodDiff.avg,
+                              bidirectional=bool(nd2_file.custom_data['GrabberCameraSettingsV1_0']['GrabberCameraSettings']['PropertiesQuality']['ScanDirection']),
+                              nrois=0,
+                              scan_duration=self.estimate_scan_duration(nd2_file)))
+
+            # MultiROI to be implemented later
+
+            # Insert in Field
+            if not is_multiROI:
+                self.Field.insert([dict(key,
+                                        field_idx=plane_idx,
+                                        px_height=nd2_file.attributes.heightPx,
+                                        px_width=nd2_file.attributes.widthPx,
+                                        um_height=nd2_file.attributes.heightPx * nd2_file.voxel_size().y,
+                                        um_width=nd2_file.attributes.widthPx * nd2_file.voxel_size().x,
+                                        field_x=None,
+                                        field_y=None,
+                                        field_z=None)
+                                   for plane_idx in range(nd2_file.sizes.get('Z', 1))])
         else:
             raise NotImplementedError(
-                f'Loading routine not implemented for {acq_software} acquisition software')
+                f'Loading routine not implemented for {acq_software} '
+                'acquisition software')
 
         # Insert file(s)
-        root_dir = find_root_directory(get_imaging_root_data_dir(), scan_filepaths[0])
+        root_dir = find_root_directory(get_imaging_root_data_dir(), 
+                                       scan_filepaths[0])
 
-        scan_files = [pathlib.Path(f).relative_to(root_dir).as_posix() for f in scan_filepaths]
+        scan_files = [pathlib.Path(f).relative_to(root_dir).as_posix() 
+                      for f in scan_filepaths]
         self.ScanFile.insert([{**key, 'file_path': f} for f in scan_files])

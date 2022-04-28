@@ -97,21 +97,13 @@ def get_processed_root_data_dir() -> str:
         return get_imaging_root_data_dir()[0]
 
 
-def get_scan_image_file(scan_key: str) -> str:
+def get_scan_image_files(scan_key: dict) -> list:
     """
     Retrieve the list of ScanImage files associated with a given Scan
     :param scan_key: key of a Scan
     :return: list of ScanImage files' full file-paths
     """
-
-    scanpath = (ScanPath & f"scan_id = '{scan_key}'").fetch1('path')
-    scanpath = pathlib.Path(scanpath)
-    fpath = [x for x in scanpath.iterdir() if x.is_file() and '.tif' in x.name]
-    if len(fpath) < 0:
-        raise ValueError(f"No .tif file found in {scan_key}")
-    elif len(fpath) > 1:
-        raise ValueError(f"More than one .tif file found in {scan_key}")
-    return str(fpath[0])
+    return _linking_module.get_scan_image_files(scan_key)
 
 def get_scan_box_files(scan_key: dict) -> list:
     """

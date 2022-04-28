@@ -4,10 +4,9 @@ import importlib
 import inspect
 from element_session import session_with_id
 from adamacs.schemas import subject
-from . import find_root_directory
 import scanreader
 import pdb
-from element_interface.utils import find_root_directory, find_full_path
+from element_interface.utils import find_root_directory, find_full_path, find_root_directory
 
 schema = dj.schema()
 

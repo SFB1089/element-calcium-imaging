@@ -225,15 +225,14 @@ class ScanInfo(dj.Imported):
         fps = 1000 / scan_obj.experiment[0].parameters.periods[0].periodDiff.avg  # Frame per second
         return (tf - ti) * 86400 + 1 / fps
 
-
     def make(self, key):
         """ Read and store some scan meta information."""
         acq_software = (Scan & key).fetch1('acq_software')
-        scan_filepaths = (ScanPath & key).fetch1('path')
-    
+        scan_root = (ScanPath & key).fetch1('path')
+
         if acq_software == 'ScanImage':
             # Read the scan
-            scan_filepath = get_scan_image_file(key)
+            scan_filepath = get_scan_image_files(key)
             print(type(scan_filepath), scan_filepath)
 
             scan = scanreader.read_scan(scan_filepath)
@@ -263,8 +262,7 @@ class ScanInfo(dj.Imported):
             # Insert Field(s)
             if scan.is_multiROI:
                 self.Field.insert([
-                    dict(session_id=session_id,
-                         scan_id=key,
+                    dict(key,
                          field_idx=field_id,
                          px_height=scan.field_heights[field_id],
                          px_width=scan.field_widths[field_id],
@@ -281,8 +279,7 @@ class ScanInfo(dj.Imported):
                     for field_id in range(scan.num_fields)])
             else:
                 self.Field.insert([
-                    dict(session_id=session_id,
-                         scan_id=key,
+                    dict(key,
                          field_idx=plane_idx,
                          px_height=scan.image_height,
                          px_width=scan.image_width,
@@ -377,9 +374,10 @@ class ScanInfo(dj.Imported):
                 'acquisition software')
 
         # Insert file(s)
-        root_dir = find_root_directory(get_imaging_root_data_dir(), 
-                                       scan_filepaths[0])
 
-        scan_files = [pathlib.Path(f).relative_to(root_dir).as_posix() 
-                      for f in scan_filepaths]
-        self.ScanFile.insert([{**key, 'file_path': f} for f in scan_files])
+        root_dir = find_root_directory(get_imaging_root_data_dir(), 
+                                       scan_root)
+        # pdb.set_trace()
+        scan_file = pathlib.Path(scan_root).relative_to(root_dir).as_posix()
+        self.ScanFile.insert1(dict(key,
+                                  file_path=scan_file))

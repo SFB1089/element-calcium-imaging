@@ -378,6 +378,6 @@ class ScanInfo(dj.Imported):
         root_dir = find_root_directory(get_imaging_root_data_dir(), 
                                        scan_root)
         # pdb.set_trace()
-        scan_file = pathlib.Path(scan_root).relative_to(root_dir).as_posix()
+        # scan_file = pathlib.Path(scan_root).relative_to(root_dir).as_posix()
         self.ScanFile.insert1(dict(key,
-                                  file_path=scan_file))
+                                  file_path=scan_filepath))

@@ -193,6 +193,7 @@ class ScanInfo(dj.Imported):
     fill_fraction=null   : float     # raster scan temporal fill fraction (see scanimage)
     scan_datetime=null   : datetime  # datetime of the scan
     scan_duration=null   : float     # (seconds) duration of the scan
+    userfunction_info    : varchar(255)  # string argument of file consolidation userfunction 1
     """
 
     class Field(dj.Part):
@@ -249,6 +250,8 @@ class ScanInfo(dj.Imported):
             z_zero = scan.motor_position_at_zero[2] \
                         if scan.motor_position_at_zero else None
             
+            userfunction_arg = list(scan.user_functions.get("SI.hUserFunctions.userFunctionsCfg__1.Arguments"))[0]
+
             self.insert1(dict(key,
                               nfields=scan.num_fields,
                               nchannels=scan.num_channels,
@@ -262,7 +265,8 @@ class ScanInfo(dj.Imported):
                               usecs_per_line=scan.seconds_per_line * 1e6,
                               fill_fraction=scan.temporal_fill_fraction,
                               nrois=scan.num_rois if scan.is_multiROI else 0,
-                              scan_duration=scan.num_frames / scan.fps))
+                              scan_duration=scan.num_frames / scan.fps),
+                              userfunction_info = userfunction_arg)
             # Insert Field(s)
             if scan.is_multiROI:
                 self.Field.insert([

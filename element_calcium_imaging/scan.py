@@ -235,7 +235,7 @@ class ScanInfo(dj.Imported):
         if acq_software == 'ScanImage':
             # Read the scan
             scan_filepath = get_scan_image_files(key)
-            print(type(scan_filepath), scan_filepath)
+            print(type(scan_filepath), scan_filepath, 'TRCOM') #TR23: TODO - fix bug in scan vs session handling
             """
             if len(scan_filepath) > 1:
                 scan_filepath = [scan_filepath[0]]

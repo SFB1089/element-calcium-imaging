@@ -55,6 +55,16 @@ class ProcessingMethod(dj.Lookup):
     contents = [('suite2p', 'suite2p analysis suite'),
                 ('caiman', 'caiman analysis suite')]
 
+@schema
+class ProcessingScanConcatenation(dj.Lookup):
+    definition = """  #  Method, package, analysis suite used for processing of calcium imaging data (e.g. Suite2p, CaImAn, etc.)
+    concatenation_method: char(8)
+    ---
+    concatenation_method_desc: varchar(1000)
+    """
+
+    contents = [('concat', 'concatenate the individual scans of a session'),
+                ('indiv', 'individual scan processing')]
 
 @schema
 class ProcessingParamSet(dj.Lookup):
@@ -62,6 +72,7 @@ class ProcessingParamSet(dj.Lookup):
     paramset_idx:  smallint
     ---
     -> ProcessingMethod
+    -> ProcessingScanConcatenation
     paramset_desc: varchar(128)
     param_set_hash: uuid
     unique index (param_set_hash)
@@ -69,9 +80,10 @@ class ProcessingParamSet(dj.Lookup):
     """
 
     @classmethod
-    def insert_new_params(cls, processing_method: str, paramset_idx: int,
+    def insert_new_params(cls, processing_method: str, concatenation_method: str, paramset_idx: int,
                           paramset_desc: str, params: dict):
         param_dict = {'processing_method': processing_method,
+                      'concatenation_method': concatenation_method,
                       'paramset_idx': paramset_idx,
                       'paramset_desc': paramset_desc,
                       'params': params,
@@ -209,22 +221,29 @@ class Processing(dj.Computed):
         elif task_mode == 'trigger':
             
             method = (ProcessingTask * ProcessingParamSet * ProcessingMethod * scan.Scan & key).fetch1('processing_method')
+            concatenate = (ProcessingTask * ProcessingParamSet * ProcessingScanConcatenation * scan.Scan & key).fetch1('concatenation_method')
 
             if method == 'suite2p':
                 import suite2p
 
                 suite2p_params = (ProcessingTask * ProcessingParamSet & key).fetch1('params')
                 suite2p_params['save_path0'] = output_dir
-                suite2p_params["save_path0"] = output_dir
 
                 (
                     suite2p_params["fs"],
                     suite2p_params["nplanes"],
                     suite2p_params["nchannels"],
                 ) = (ProcessingTask * scan.Scan * scan.ScanInfo & key).fetch1("fps", "ndepths", "nchannels")
-
-                image_files = (ProcessingTask * scan.Scan * scan.ScanInfo * scan.ScanInfo.ScanFile & key).fetch('file_path')
-                image_files = [find_full_path(get_imaging_root_data_dir(), image_file) for image_file in image_files]
+                
+                if concatenate == 'indiv':
+                    image_files = (ProcessingTask * scan.Scan * scan.ScanInfo * scan.ScanInfo.ScanFile & key).fetch('file_path')
+                    image_files = [find_full_path(get_imaging_root_data_dir(), image_file) for image_file in image_files]
+                elif concatenate == 'concat':
+                    # Removing the "scan_id" key from the dictionary
+                    keynoscan = key.copy()
+                    del keynoscan['scan_id']            
+                    image_files = (ProcessingTask * scan.Scan * scan.ScanInfo * scan.ScanInfo.ScanFile & keynoscan).fetch('file_path')
+                    image_files = [find_full_path(get_imaging_root_data_dir(), image_file) for image_file in image_files]
 
                 input_format = pathlib.Path(image_files[0]).suffix
                 suite2p_params['input_format'] = input_format[1:]

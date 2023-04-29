@@ -5,7 +5,7 @@ import os
 import inspect
 import importlib
 from element_interface.utils import find_full_path, dict_to_uuid, find_root_directory
-
+from element_session import session_with_id as session
 from . import scan
 from .scan import get_imaging_root_data_dir, get_processed_root_data_dir, get_scan_image_files, get_scan_box_files, get_nd2_files
 
@@ -64,6 +64,7 @@ class ProcessingScanConcatenation(dj.Lookup):
     """
 
     contents = [('concat', 'concatenate the individual scans of a session'),
+                ('consame', 'concatenate the scans of a all sessions of a same site'),
                 ('indiv', 'individual scan processing')]
 
 @schema
@@ -243,6 +244,13 @@ class Processing(dj.Computed):
                     keynoscan = key.copy()
                     del keynoscan['scan_id']            
                     image_files = (ProcessingTask * scan.Scan * scan.ScanInfo * scan.ScanInfo.ScanFile & keynoscan).fetch('file_path')
+                    image_files = [find_full_path(get_imaging_root_data_dir(), image_file) for image_file in image_files]
+                elif concatenate == 'consame':
+                    # Removing the "scan_id" key from the dictionary and setting session id to same_site.
+                    keynoscansamesite = key.copy()
+                    del keynoscansamesite['scan_id'] 
+                    keynoscansamesite['same_site_id'] = keynoscansamesite.pop('session_id')           
+                    image_files = (ProcessingTask * scan.Scan * scan.ScanInfo * scan.ScanInfo.ScanFile * session.SessionSameSite & keynoscansamesite).fetch('file_path')
                     image_files = [find_full_path(get_imaging_root_data_dir(), image_file) for image_file in image_files]
 
                 input_format = pathlib.Path(image_files[0]).suffix

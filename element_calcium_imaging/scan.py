@@ -235,11 +235,11 @@ class ScanInfo(dj.Imported):
         if acq_software == 'ScanImage':
             # Read the scan
             scan_filepath = get_scan_image_files(key)
-            """
+
             if len(scan_filepath) > 1:
                 scan_filepath = [scan_filepath[0]]
                 print(f"Multiple .tif files found. Chose {scan_filepath[0]} for scanimage header")
-            """
+
             scan = scanreader.read_scan(scan_filepath)
             # Insert in ScanInfo
 

@@ -444,35 +444,38 @@ class MotionCorrection(dj.Imported):
                             'block_height': s2p.ops['block_size'][0],
                             'block_width': s2p.ops['block_size'][1],
                             'block_depth': 1,
-                            'block_count_y': s2p.ops['nblocks'][0],
-                            'block_count_x': s2p.ops['nblocks'][1],
+                            'block_count_y': s2p.ops['Ly']//s2p.ops['block_size'][0], #TR23 not an ops output anymore - forcing to size/blocks 
+                            'block_count_x': s2p.ops['Ly']//s2p.ops['block_size'][1], #TR23 not an ops output anymore - forcing to size/blocks 
                             'block_count_z': len(suite2p_dataset.planes),
                             'outlier_frames': s2p.ops['badframes']}
-                    else:
-                        nonrigid_correction['outlier_frames'] = np.logical_or(
-                            nonrigid_correction['outlier_frames'], s2p.ops['badframes'])
-                    for b_id, (b_y, b_x, bshift_y, bshift_x) in enumerate(
-                            zip(s2p.ops['xblock'], s2p.ops['yblock'],
-                                s2p.ops['yoff1'].T, s2p.ops['xoff1'].T)):
-                        if b_id in nonrigid_blocks:
-                            nonrigid_blocks[b_id]['y_shifts'] = np.vstack(
-                                [nonrigid_blocks[b_id]['y_shifts'], bshift_y])
-                            nonrigid_blocks[b_id]['y_std'] = np.nanstd(
-                                nonrigid_blocks[b_id]['y_shifts'].flatten())
-                            nonrigid_blocks[b_id]['x_shifts'] = np.vstack(
-                                [nonrigid_blocks[b_id]['x_shifts'], bshift_x])
-                            nonrigid_blocks[b_id]['x_std'] = np.nanstd(
-                                nonrigid_blocks[b_id]['x_shifts'].flatten())
-                        else:
-                            nonrigid_blocks[b_id] = {
-                                **key, 'block_id': b_id,
-                                'block_y': b_y, 'block_x': b_x,
-                                'block_z': np.full_like(b_x, plane),
-                                'y_shifts': bshift_y, 'x_shifts': bshift_x,
-                                'z_shifts': np.full((len(suite2p_dataset.planes),
-                                                     len(bshift_x)), 0),
-                                'y_std': np.nanstd(bshift_y), 'x_std': np.nanstd(bshift_x),
-                                'z_std': np.nan}
+                        
+                    # TRMOD 2023: SI does not support these outputs since years...
+                    # else:
+                    #     nonrigid_correction['outlier_frames'] = np.logical_or(
+                    #         nonrigid_correction['outlier_frames'], s2p.ops['badframes'])
+                        
+                    # for b_id, (b_y, b_x, bshift_y, bshift_x) in enumerate(
+                    #         zip(s2p.ops['xblock'], s2p.ops['yblock'],
+                    #             s2p.ops['yoff1'].T, s2p.ops['xoff1'].T)):
+                    #     if b_id in nonrigid_blocks:
+                    #         nonrigid_blocks[b_id]['y_shifts'] = np.vstack(
+                    #             [nonrigid_blocks[b_id]['y_shifts'], bshift_y])
+                    #         nonrigid_blocks[b_id]['y_std'] = np.nanstd(
+                    #             nonrigid_blocks[b_id]['y_shifts'].flatten())
+                    #         nonrigid_blocks[b_id]['x_shifts'] = np.vstack(
+                    #             [nonrigid_blocks[b_id]['x_shifts'], bshift_x])
+                    #         nonrigid_blocks[b_id]['x_std'] = np.nanstd(
+                    #             nonrigid_blocks[b_id]['x_shifts'].flatten())
+                    #     else:
+                    #         nonrigid_blocks[b_id] = {
+                    #             **key, 'block_id': b_id,
+                    #             'block_y': b_y, 'block_x': b_x,
+                    #             'block_z': np.full_like(b_x, plane),
+                    #             'y_shifts': bshift_y, 'x_shifts': bshift_x,
+                    #             'z_shifts': np.full((len(suite2p_dataset.planes),
+                    #                                  len(bshift_x)), 0),
+                    #             'y_std': np.nanstd(bshift_y), 'x_std': np.nanstd(bshift_x),
+                    #             'z_std': np.nan}
 
                 # -- summary images --
                 motion_correction_key = (scan.ScanInfo.Field * Curation
@@ -488,7 +491,7 @@ class MotionCorrection(dj.Imported):
                 self.RigidMotionCorrection.insert1(rigid_correction)
             if nonrigid_correction:
                 self.NonRigidMotionCorrection.insert1(nonrigid_correction)
-                self.Block.insert(nonrigid_blocks.values())
+                # self.Block.insert(nonrigid_blocks.values()) - TRMOD 2023: REMOVING BLOCK TABLE FOR NON-RIGID !!!
             self.Summary.insert(summary_images)
         elif method == 'caiman':
             caiman_dataset = imaging_dataset

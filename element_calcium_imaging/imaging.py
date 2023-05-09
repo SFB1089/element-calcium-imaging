@@ -610,6 +610,7 @@ class Segmentation(dj.Computed):
         -> master
         mask            : smallint
         ---
+        roi_group       : smallint  # chronic recording same-cell-id. Defaults to 0. 
         -> scan.Channel.proj(segmentation_channel='channel')  # channel used for segmentation
         mask_npix       : int       # number of pixels in ROIs
         mask_center_x   : int       # center x coordinate in pixel
@@ -635,6 +636,7 @@ class Segmentation(dj.Computed):
                         s2p.iscell, s2p.cell_prob, s2p.stat)):
                     masks.append({
                         **key, 'mask': mask_idx + mask_count,
+                        'roi_group': 0,                     #TR23
                         'segmentation_channel': s2p.segmentation_channel,
                         'mask_npix': mask_stat['npix'],
                         'mask_center_x':  mask_stat['med'][1],

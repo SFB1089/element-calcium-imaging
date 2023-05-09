@@ -610,7 +610,7 @@ class Segmentation(dj.Computed):
         -> master
         mask            : smallint
         ---
-        roi_group       : smallint  # chronic recording same-cell-id. Defaults to 0. 
+        roi_group       : smallint  # chronic recording same-cell-id. Defaults to 0.  #TR23
         -> scan.Channel.proj(segmentation_channel='channel')  # channel used for segmentation
         mask_npix       : int       # number of pixels in ROIs
         mask_center_x   : int       # center x coordinate in pixel

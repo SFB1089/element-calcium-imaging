@@ -753,8 +753,8 @@ class Fluorescence(dj.Computed):
         -> Segmentation.Mask
         -> scan.Channel.proj(fluo_channel='channel')  # the channel that this trace comes from         
         ---
-        fluorescence                : longblob  # fluorescence trace associated with this mask
-        neuropil_fluorescence=null  : longblob  # Neuropil fluorescence trace
+        fluorescence                : blob@external-raw    # fluorescence trace associated with this mask
+        neuropil_fluorescence=null  : blob@external-raw    # Neuropil fluorescence trace
         """
 
     def make(self, key):
@@ -826,7 +826,7 @@ class Activity(dj.Computed):
         -> master
         -> Fluorescence.Trace
         ---
-        activity_trace: longblob  # 
+        activity_trace: blob@external-raw    # 
         """
 
     @property

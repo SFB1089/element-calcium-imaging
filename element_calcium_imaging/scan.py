@@ -267,6 +267,7 @@ class ScanInfo(dj.Imported):
                               fill_fraction=scan.temporal_fill_fraction,
                               nrois=scan.num_rois if scan.is_multiROI else 0,
                               scan_duration=scan.num_frames / scan.fps,
+                              scan_datetime=scan.date, # TR24 scan start date in datetime format
                               userfunction_info = userfunction_arg))
             # Insert Field(s)
             if scan.is_multiROI:

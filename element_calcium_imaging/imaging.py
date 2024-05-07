@@ -318,7 +318,7 @@ class Curation(dj.Manual):
 
         if method == 'suite2p':
             suite2p_dataset = imaging_dataset
-            curation_time = suite2p_dataset.curation_time
+            curation_time = suite2p_dataset.curation_time #TR24: switched to curation_time instead of creation_time to actually show curation time...
         elif method == 'caiman':
             caiman_dataset = imaging_dataset
             curation_time = caiman_dataset.creation_time

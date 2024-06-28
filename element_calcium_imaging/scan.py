@@ -279,7 +279,7 @@ class ScanInfo(dj.Imported):
                          um_height=scan.field_heights_in_microns[field_id],
                          um_width=scan.field_widths_in_microns[field_id],
                          zoom=scan.zoom[field_id],
-                         power=scan.power_percent[field_id],  # TR24 laser power
+                         power=scan.power_percent[field_id][0],  # TR24 laser power
                          field_x=x_zero + scan._degrees_to_microns(scan.fields[field_id].x) \
                                     if x_zero else None,
                          field_y=y_zero + scan._degrees_to_microns(scan.fields[field_id].y) \
@@ -298,7 +298,7 @@ class ScanInfo(dj.Imported):
                          um_height=getattr(scan, 'image_height_in_microns', None),
                          um_width=getattr(scan, 'image_width_in_microns', None),
                          zoom=scan.zoom,
-                         power=scan.power_percent,  # TR24 laser power
+                         power=scan.power_percent[0],  # TR24 laser power
                          field_x=x_zero if x_zero else None,
                          field_y=y_zero if y_zero else None,
                          field_z=z_zero + scan.scanning_depths[plane_idx] \

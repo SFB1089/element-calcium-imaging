@@ -2,6 +2,7 @@ import datajoint as dj
 import numpy as np
 import pathlib
 import os
+import glob
 import inspect
 import importlib
 from element_interface.utils import find_full_path, dict_to_uuid, find_root_directory
@@ -198,6 +199,10 @@ class Processing(dj.Computed):
 
     def make(self, key):
         task_mode = (ProcessingTask & key).fetch1('task_mode')
+        paramsetidx = (ProcessingTask & key).fetch1('paramset_idx')
+        denoised = False
+        if paramsetidx>=1000:
+            denoised = True
 
         output_dir = (ProcessingTask & key).fetch1('processing_output_dir')
         output_dir = find_full_path(get_imaging_root_data_dir(), output_dir).as_posix()
@@ -208,6 +213,8 @@ class Processing(dj.Computed):
         
         if task_mode == 'load':
             method, imaging_dataset = get_loader_result(key, ProcessingTask)
+            if denoised:
+                print('Loading of s2p-processed denoised data not implemented yet! Loading original data instead.') #TR25: Implement denoised data loading
             if method == 'suite2p':
                 if (scan.ScanInfo & key).fetch1('nrois') > 0:
                     raise NotImplementedError(f'Suite2p ingestion error - Unable to handle'
@@ -229,7 +236,8 @@ class Processing(dj.Computed):
 
                 suite2p_params = (ProcessingTask * ProcessingParamSet & key).fetch1('params')
                 suite2p_params['save_path0'] = output_dir
-
+                if denoised:
+                    output_dir = output_dir + '_denoised'
                 (
                     suite2p_params["fs"],
                     suite2p_params["nplanes"],
@@ -239,6 +247,10 @@ class Processing(dj.Computed):
                 if concatenate == 'indiv':
                     image_files = (ProcessingTask * scan.Scan * scan.ScanInfo * scan.ScanInfo.ScanFile & key).fetch('file_path')
                     image_files = [find_full_path(get_imaging_root_data_dir(), image_file) for image_file in image_files]
+                    if denoised:
+                        directory, filename = os.path.split(image_files[0])
+                        new_directory = os.path.join(directory, "support")
+                        image_files = sorted(glob.glob(os.path.join(new_directory, "*.tif")))
                 elif concatenate == 'concat':
                     # Removing the "scan_id" key from the dictionary
                     keynoscan = key.copy()

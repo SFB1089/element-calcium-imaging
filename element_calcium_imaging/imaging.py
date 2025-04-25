@@ -2,6 +2,7 @@ import datajoint as dj
 import numpy as np
 import pathlib
 import os
+import sys
 import glob
 import inspect
 import importlib
@@ -203,6 +204,7 @@ class Processing(dj.Computed):
         denoised = False
         if paramsetidx>=1000:
             denoised = True
+            print('Running s2p on denoised data')
 
         output_dir = (ProcessingTask & key).fetch1('processing_output_dir')
         output_dir = find_full_path(get_imaging_root_data_dir(), output_dir).as_posix()
@@ -250,7 +252,10 @@ class Processing(dj.Computed):
                     if denoised:
                         directory, filename = os.path.split(image_files[0])
                         new_directory = os.path.join(directory, "support")
+                        print(new_directory)
                         image_files = sorted(glob.glob(os.path.join(new_directory, "*.tif")))
+                        image_files = [find_full_path(get_imaging_root_data_dir(), image_file) for image_file in image_files]
+                        print(image_files)
                 elif concatenate == 'concat':
                     # Removing the "scan_id" key from the dictionary
                     keynoscan = key.copy()
@@ -823,8 +828,24 @@ class ActivityExtractionMethod(dj.Lookup):
     extraction_method: varchar(32)
     """
 
-    contents = zip(['suite2p_deconvolution', 'caiman_deconvolution', 'caiman_dff'])
+    contents = zip(['suite2p_deconvolution', 'caiman_deconvolution', 'caiman_dff', 'cascade_inference'])
 
+@schema
+class ActivityCascadeModel(dj.Lookup):
+    definition = """  # Lookup table for CASCADE models used in spike inference
+    model_name: varchar(64)  # Name of the CASCADE model
+    ---
+    model_path: varchar(255)  # Path to the CASCADE model
+    model_description='': varchar(1000)  # Description of the model
+    """
+
+@schema
+class ActivityCascadeTask(dj.Manual):
+    definition = """  # Task for CASCADE spike inference
+    -> Fluorescence
+    -> ActivityExtractionMethod
+    -> ActivityCascadeModel
+    """
 
 @schema
 class Activity(dj.Computed):
@@ -851,12 +872,19 @@ class Activity(dj.Computed):
                              * ProcessingParamSet.proj('processing_method')
                              & 'processing_method = "caiman"'
                              & 'extraction_method LIKE "caiman%"')
+        # cascade_key_source = (Fluorescence * ActivityExtractionMethod
+        #                      * ProcessingParamSet.proj('processing_method')
+        #                      & 'processing_method = "suite2p"'
+        #                      & 'extraction_method LIKE "cascade%"')
+        # return suite2p_key_source.proj() + caiman_key_source.proj() + cascade_key_source.proj()
         return suite2p_key_source.proj() + caiman_key_source.proj()
 
     def make(self, key):
+ 
         method, imaging_dataset = get_loader_result(key, Curation)
 
         if method == 'suite2p':
+            
             if key['extraction_method'] == 'suite2p_deconvolution':
                 suite2p_dataset = imaging_dataset
                 # ---- iterate through all s2p plane outputs ----
@@ -870,6 +898,39 @@ class Activity(dj.Computed):
 
                 self.insert1(key)
                 self.Trace.insert(spikes)
+            # elif key['extraction_method'] == 'cascade_inference':
+                    # if os.path.isdir('/home/backup_user/github/Cascade'):
+                    # # Append the path and change the directory
+                    #     sys.path.append('/home/backup_user/github/Cascade')
+                    #     os.chdir('/home/backup_user/github/Cascade')
+                    #     from cascade2p import cascade
+                    #     from cascade2p.utils import plot_dFF_traces, plot_noise_level_distribution, plot_noise_matched_ground_truth
+                    # else:
+                    #     print("Cascade Directory does not exist")
+        
+            #     # Fetch traces from Fluorescence.Trace
+            #     traces = (Fluorescence.Trace & key).fetch(as_dict=True)
+
+            #     # Fetch CASCADE model parameters
+            #     model_name, model_path = (ActivityCascadeModel & key).fetch1('model_name', 'model_path')
+
+            #     # Load the CASCADE model
+            #     import cascade  # Assuming CASCADE is installed
+
+            #     # Perform spike inference
+            #     inferred_spikes = []
+            #     for trace in traces:
+            #         spikes = cascade.predict(cascade_model, trace['fluorescence'], verbosity=0)
+            #         inferred_spikes.append({
+            #             **key,
+            #             'mask': trace['mask'],
+            #             'fluo_channel': trace['fluo_channel'],
+            #             'activity_trace': spikes
+            #         })
+
+            #     # Insert results
+            #     self.insert1(key)
+            #     self.Trace.insert(inferred_spikes)
         elif method == 'caiman':
             caiman_dataset = imaging_dataset
 
@@ -923,4 +984,3 @@ def get_loader_result(key, table):
         raise NotImplementedError('Unknown/unimplemented method: {}'.format(method))
 
     return method, loaded_dataset
-

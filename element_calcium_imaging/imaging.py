@@ -951,17 +951,17 @@ class Activity(dj.Computed):
                 inferred_spikes = []
 
                 # For each trace, append the inferred spikes along with other trace information
-                for trace in tqdm(traces, desc="Inferring spikes"):
+                for i,trace in enumerate(traces):
                     inferred_spikes.append({
                         **key,  # Include the key information
                         'mask': trace['mask'],  # Include the mask for the trace
                         'fluo_channel': trace['fluo_channel'],  # Include the fluorescence channel information
-                        'activity_trace': spikes  # Store the inferred activity trace (spikes)
+                        'activity_trace': spikes[i, :]  # Store the inferred activity trace (spikes)
                     })
                     
                 # Insert results
-                self.insert1(key, ignore_extra_fields=True)
-                self.Trace.insert(inferred_spikes, ignore_extra_fields=True)
+                self.insert1(key)
+                self.Trace.insert(inferred_spikes)
 
   
         elif method == 'caiman':

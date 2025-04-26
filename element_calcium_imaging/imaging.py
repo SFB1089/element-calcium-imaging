@@ -10,6 +10,8 @@ from element_interface.utils import find_full_path, dict_to_uuid, find_root_dire
 from element_session import session_with_id as session
 from . import scan
 from .scan import get_imaging_root_data_dir, get_processed_root_data_dir, get_scan_image_files, get_scan_box_files, get_nd2_files
+from scipy.ndimage import percentile_filter
+from joblib import Parallel, delayed
 
 schema = dj.schema()
 
@@ -844,6 +846,7 @@ class ActivityCascadeTask(dj.Manual):
     definition = """  # Task for CASCADE spike inference
     -> Fluorescence
     -> ActivityExtractionMethod
+    ---
     -> ActivityCascadeModel
     """
 
@@ -872,12 +875,11 @@ class Activity(dj.Computed):
                              * ProcessingParamSet.proj('processing_method')
                              & 'processing_method = "caiman"'
                              & 'extraction_method LIKE "caiman%"')
-        # cascade_key_source = (Fluorescence * ActivityExtractionMethod
-        #                      * ProcessingParamSet.proj('processing_method')
-        #                      & 'processing_method = "suite2p"'
-        #                      & 'extraction_method LIKE "cascade%"')
-        # return suite2p_key_source.proj() + caiman_key_source.proj() + cascade_key_source.proj()
-        return suite2p_key_source.proj() + caiman_key_source.proj()
+        cascade_key_source = (Fluorescence * ProcessingParamSet.proj('processing_method') 
+                              * ActivityCascadeTask)
+
+        return suite2p_key_source.proj() + caiman_key_source.proj() + cascade_key_source.proj()
+        # return suite2p_key_source.proj() + caiman_key_source.proj()
 
     def make(self, key):
  
@@ -898,39 +900,70 @@ class Activity(dj.Computed):
 
                 self.insert1(key)
                 self.Trace.insert(spikes)
-            # elif key['extraction_method'] == 'cascade_inference':
-                    # if os.path.isdir('/home/backup_user/github/Cascade'):
-                    # # Append the path and change the directory
-                    #     sys.path.append('/home/backup_user/github/Cascade')
-                    #     os.chdir('/home/backup_user/github/Cascade')
-                    #     from cascade2p import cascade
-                    #     from cascade2p.utils import plot_dFF_traces, plot_noise_level_distribution, plot_noise_matched_ground_truth
-                    # else:
-                    #     print("Cascade Directory does not exist")
-        
-            #     # Fetch traces from Fluorescence.Trace
-            #     traces = (Fluorescence.Trace & key).fetch(as_dict=True)
+                
+            elif key['extraction_method'] == 'cascade_inference':
+                if os.path.isdir('/home/backup_user/github/Cascade'):
+                # Append the path and change the directory
+                    sys.path.append('/home/backup_user/github/Cascade')
+                    os.chdir('/home/backup_user/github/Cascade')
+                    from cascade2p import cascade
+                elif os.path.isdir('/home/backup_user/Cascade'):
+                    # Append the path and change the directory
+                    sys.path.append('/home/backup_user/Cascade')
+                    os.chdir('/home/backup_user/Cascade')
+                else:
+                    print("Cascade Directory does not exist")
+                    
+                # Fetch the fluorescence traces from the database, ordered by mask
+                traces = (Fluorescence.Trace & key).fetch(as_dict=True, order_by="mask")
 
-            #     # Fetch CASCADE model parameters
-            #     model_name, model_path = (ActivityCascadeModel & key).fetch1('model_name', 'model_path')
+                # Fetch the model parameters based on the model name
+                model_name, model_path = (ActivityCascadeModel & ActivityCascadeTask &  key).fetch1('model_name', 'model_path')
 
-            #     # Load the CASCADE model
-            #     import cascade  # Assuming CASCADE is installed
+                # Calculate the smoothing window size (in samples), assuming it’s 60 seconds of data
+                framerate = (scan.ScanInfo & key).fetch1('fps')
+                smoothing_window = framerate * 60
 
-            #     # Perform spike inference
-            #     inferred_spikes = []
-            #     for trace in traces:
-            #         spikes = cascade.predict(cascade_model, trace['fluorescence'], verbosity=0)
-            #         inferred_spikes.append({
-            #             **key,
-            #             'mask': trace['mask'],
-            #             'fluo_channel': trace['fluo_channel'],
-            #             'activity_trace': spikes
-            #         })
+                # Stack the fluorescence and neuropil fluorescence traces for all timepoints
+                Fall = np.vstack([trace['fluorescence'] for trace in traces])
+                Fneu_all = np.vstack([trace['neuropil_fluorescence'] for trace in traces])
 
-            #     # Insert results
-            #     self.insert1(key)
-            #     self.Trace.insert(inferred_spikes)
+                # remove the neuropil fluorescence from the fluorescence signal
+                dF = Fall - 0.00 * Fneu_all #TR: no NP correcction for now
+
+                # Function to compute the baseline (F0) for each trace using percentile filtering
+                def compute_F0(trace_dF, smoothing_window):
+                    return percentile_filter(trace_dF, 15, size=int(smoothing_window))
+
+                # Parallelize the F0 computation across all traces using multiple jobs
+                F0 = np.array(Parallel(n_jobs=-1)(
+                    delayed(compute_F0)(dF[i, :], smoothing_window) for i in range(dF.shape[0])
+                ))
+
+                # Calculate ΔF/F0 for all traces (normalized fluorescence change)
+                dFF = (dF - F0) / F0
+
+                # Perform spike inference using the cascade model on the ΔF/F0 array
+                spikes = cascade.predict(model_name, dFF, verbosity=0)
+                    
+
+                # Initialize a list to store the inferred spikes for each trace
+                inferred_spikes = []
+
+                # For each trace, append the inferred spikes along with other trace information
+                for trace in tqdm(traces, desc="Inferring spikes"):
+                    inferred_spikes.append({
+                        **key,  # Include the key information
+                        'mask': trace['mask'],  # Include the mask for the trace
+                        'fluo_channel': trace['fluo_channel'],  # Include the fluorescence channel information
+                        'activity_trace': spikes  # Store the inferred activity trace (spikes)
+                    })
+                    
+                # Insert results
+                self.insert1(key, ignore_extra_fields=True)
+                self.Trace.insert(inferred_spikes, ignore_extra_fields=True)
+
+  
         elif method == 'caiman':
             caiman_dataset = imaging_dataset
 

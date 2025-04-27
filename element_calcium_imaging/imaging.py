@@ -911,6 +911,7 @@ class Activity(dj.Computed):
                     # Append the path and change the directory
                     sys.path.append('/home/backup_user/Cascade')
                     os.chdir('/home/backup_user/Cascade')
+                    from cascade2p import cascade
                 else:
                     print("Cascade Directory does not exist")
                     

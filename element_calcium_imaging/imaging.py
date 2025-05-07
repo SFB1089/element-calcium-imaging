@@ -8,14 +8,24 @@ import inspect
 import importlib
 from element_interface.utils import find_full_path, dict_to_uuid, find_root_directory
 from element_session import session_with_id as session
+from element_event import event
+
 from . import scan
 from .scan import get_imaging_root_data_dir, get_processed_root_data_dir, get_scan_image_files, get_scan_box_files, get_nd2_files
 from scipy.ndimage import percentile_filter
 from joblib import Parallel, delayed
 
+
+import subprocess
+import bisect
+
+
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Suppress TensorFlow warnings
+
 schema = dj.schema()
 
 _linking_module = None
+
 
 
 def activate(imaging_schema_name, scan_schema_name=None, *,
@@ -914,12 +924,17 @@ class Activity(dj.Computed):
                     from cascade2p import cascade
                 else:
                     print("Cascade Directory does not exist")
-                    
+                
+                # # Select GPU with least memory usage
+                # os.environ["CUDA_VISIBLE_DEVICES"] = str(min(range(4), key=lambda i: int(subprocess.check_output(
+                #     f"nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits -i {i}", shell=True).strip())))
+                
                 # Fetch the fluorescence traces from the database, ordered by mask
                 traces = (Fluorescence.Trace & key).fetch(as_dict=True, order_by="mask")
 
                 # Fetch the model parameters based on the model name
-                model_name, model_path = (ActivityCascadeModel & ActivityCascadeTask &  key).fetch1('model_name', 'model_path')
+                model_key = (ActivityCascadeTask &  key)
+                model_name, model_path = (ActivityCascadeModel & ActivityCascadeTask &  key & model_key).fetch1('model_name', 'model_path')
 
                 # Calculate the smoothing window size (in samples), assuming it’s 60 seconds of data
                 framerate = (scan.ScanInfo & key).fetch1('fps')
@@ -929,12 +944,31 @@ class Activity(dj.Computed):
                 Fall = np.vstack([trace['fluorescence'] for trace in traces])
                 Fneu_all = np.vstack([trace['neuropil_fluorescence'] for trace in traces])
 
+                # DO DARKFRAME CORRECTION
+                mean_darksignal = calculate_mean_darksignal(Fall, key)
+                print("mean_darksignal (will be subtracted): ", mean_darksignal)
+                
+                Fall = Fall - mean_darksignal
+                Fneu_all = Fneu_all - mean_darksignal
+                
                 # remove the neuropil fluorescence from the fluorescence signal
-                dF = Fall - 0.00 * Fneu_all #TR: no NP correcction for now
+                neu = 0.7
+                
+                # dF = Fall - neu * Fneu_all #TR: NP correcction for now
+                # Detrend by subtracting a scaled version of the neuropil fluorescence from the fluorescence signal and adding the median neuropil fluorescence in order to avoid negative values
+                
+                dF = (Fall - neu * Fneu_all) + (np.nanmedian(Fneu_all, axis=1, keepdims=True) * neu)
+                
+                print('Neuropil correction factor: ', neu)
+                
 
+                percentile = 8
+                print('Smoothing window size (in sec): ', smoothing_window / framerate)
+                print('Percentile for detrending and F0 calculation: ', percentile)
+                
                 # Function to compute the baseline (F0) for each trace using percentile filtering
-                def compute_F0(trace_dF, smoothing_window):
-                    return percentile_filter(trace_dF, 15, size=int(smoothing_window))
+                def compute_F0(trace_dF,  smoothing_window, percentile = 8):
+                    return percentile_filter(trace_dF, percentile, size=int(smoothing_window))
 
                 # Parallelize the F0 computation across all traces using multiple jobs
                 F0 = np.array(Parallel(n_jobs=-1)(
@@ -1018,3 +1052,65 @@ def get_loader_result(key, table):
         raise NotImplementedError('Unknown/unimplemented method: {}'.format(method))
 
     return method, loaded_dataset
+
+
+# Function to calculate the mean darksignal of the mean of all traces for a given scan and shuttertime
+def calculate_mean_darksignal(traces, scan_key, shuttertime=0.09):
+    """
+    Calculate the mean darksignal of the mean of all traces for a given scan and shuttertime.
+    Args:
+        traces: list or array of fluorescence traces (each trace is 1D array or dict with 'fluorescence' key)
+        scan_key: DataJoint key for the scan
+        shuttertime: float, shutter time offset (default: 0.09)
+    Returns:
+        mean_darksignal: float, mean darksignal value
+    """
+    # Get darkframe times
+    try:
+        darkframe_shutter_start = (event.Event() & "event_type='shutter'" & scan_key).fetch('event_start_time')
+        darkframe_shutter_end = (event.Event() & "event_type='shutter'" & scan_key).fetch('event_end_time')
+        darkframetimes = [darkframe_shutter_end[0] + shuttertime, darkframe_shutter_start[1] - shuttertime]
+        twoptimestamps = (event.Event() & 'event_type LIKE "%2p_frames%"' & scan_key).fetch('event_start_time')
+        darkframes = get_closest_timestamps(twoptimestamps, darkframetimes)
+    except Exception:
+        darkframes = [12, 24]  # Hardcoding! Problem: importing event already in imaging is problematic
+        print("event.Event() not available, using hardcoded darkframes")
+        print("darkframes: ", darkframes)
+
+    # Stack traces if needed
+    if isinstance(traces[0], dict) and 'fluorescence' in traces[0]:
+        traces_stack = np.vstack([tr['fluorescence'] for tr in traces])
+    else:
+        traces_stack = np.vstack(traces)
+    average_trace = np.mean(traces_stack, axis=0)
+    mean_darksignal = np.mean(average_trace[darkframes[0]:darkframes[-1]])
+    return mean_darksignal
+
+# Example usage:
+# mean_darksignal = calculate_mean_darksignal(traces, scan_key)
+
+
+# Function to find the closest timestamp in a series
+def get_closest_timestamps(series, target_timestamp):
+    # List to store the indices
+    indices = []
+
+    # For each timestamp in series1, find the closest timestamp in series2 and get its index
+    for t1 in series:
+        closest_index = closest_timestamp(target_timestamp, t1)
+        indices.append(closest_index)
+    return indices
+
+# Function to find closest timestamp
+def closest_timestamp(series, target_timestamp):
+    index = bisect.bisect_left(series, target_timestamp)
+    if index == 0:
+        return 0
+    if index == len(series):
+        return len(series)-1
+    before = series[index - 1]
+    after = series[index]
+    if after - target_timestamp < target_timestamp - before:
+       return index
+    else:
+       return index-1

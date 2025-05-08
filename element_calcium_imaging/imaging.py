@@ -840,7 +840,7 @@ class ActivityExtractionMethod(dj.Lookup):
     extraction_method: varchar(32)
     """
 
-    contents = zip(['suite2p_deconvolution', 'caiman_deconvolution', 'caiman_dff', 'cascade_inference', 'cascade_inference_no_neuropil'])
+    contents = zip(['suite2p_deconvolution', 'caiman_deconvolution', 'caiman_dff', 'cascade_inference', 'cascade_inference_no_neuropil', 'cascade_inference_11', 'cascade_inference_no_neuropil_11'])
 
 @schema
 class ActivityCascadeModel(dj.Lookup):
@@ -911,7 +911,7 @@ class Activity(dj.Computed):
                 self.insert1(key)
                 self.Trace.insert(spikes)
                 
-            elif key['extraction_method'] == 'cascade_inference':
+            elif 'cascade_inference' in key['extraction_method']:
                 if os.path.isdir('/home/backup_user/github/Cascade'):
                 # Append the path and change the directory
                     sys.path.append('/home/backup_user/github/Cascade')
@@ -952,7 +952,19 @@ class Activity(dj.Computed):
                 Fneu_all = Fneu_all - mean_darksignal
                 
                 # remove the neuropil fluorescence from the fluorescence signal
-                neu = 0.7
+                if key['extraction_method'] == 'cascade_inference':
+                    neu = 0.7
+                    percentile = 8
+                elif key['extraction_method'] == 'cascade_inference_no_neuropil':
+                    neu = 0
+                    percentile = 8
+                elif key['extraction_method'] == 'cascade_inference_no_neuropil_11':
+                    neu = 0
+                    percentile = 11
+                elif key['extraction_method'] == 'cascade_inference_11':
+                    neu = 0.7
+                    percentile = 11
+                                    
                 
                 # dF = Fall - neu * Fneu_all #TR: NP correcction for now
                 # Detrend by subtracting a scaled version of the neuropil fluorescence from the fluorescence signal and adding the median neuropil fluorescence in order to avoid negative values
@@ -960,9 +972,7 @@ class Activity(dj.Computed):
                 dF = (Fall - neu * Fneu_all) + (np.nanmedian(Fneu_all, axis=1, keepdims=True) * neu)
                 
                 print('Neuropil correction factor: ', neu)
-                
-
-                percentile = 8
+                                
                 print('Smoothing window size (in sec): ', smoothing_window / framerate)
                 print('Percentile for detrending and F0 calculation: ', percentile)
                 
@@ -998,93 +1008,7 @@ class Activity(dj.Computed):
                 self.insert1(key)
                 self.Trace.insert(inferred_spikes)
         
-            elif key['extraction_method'] == 'cascade_inference_no_neuropil':
-                print("Using CASCADE without neuropil correction")
-                if os.path.isdir('/home/backup_user/github/Cascade'):
-                # Append the path and change the directory
-                    sys.path.append('/home/backup_user/github/Cascade')
-                    os.chdir('/home/backup_user/github/Cascade')
-                    from cascade2p import cascade
-                elif os.path.isdir('/home/backup_user/Cascade'):
-                    # Append the path and change the directory
-                    sys.path.append('/home/backup_user/Cascade')
-                    os.chdir('/home/backup_user/Cascade')
-                    from cascade2p import cascade
-                else:
-                    print("Cascade Directory does not exist")
-                
-                # # Select GPU with least memory usage
-                # os.environ["CUDA_VISIBLE_DEVICES"] = str(min(range(4), key=lambda i: int(subprocess.check_output(
-                #     f"nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits -i {i}", shell=True).strip())))
-                
-                # Fetch the fluorescence traces from the database, ordered by mask
-                traces = (Fluorescence.Trace & key).fetch(as_dict=True, order_by="mask")
-
-                # Fetch the model parameters based on the model name
-                model_key = (ActivityCascadeTask &  key)
-                model_name, model_path = (ActivityCascadeModel & ActivityCascadeTask &  key & model_key).fetch1('model_name', 'model_path')
-
-                # Calculate the smoothing window size (in samples), assuming it’s 60 seconds of data
-                framerate = (scan.ScanInfo & key).fetch1('fps')
-                smoothing_window = framerate * 60
-
-                # Stack the fluorescence and neuropil fluorescence traces for all timepoints
-                Fall = np.vstack([trace['fluorescence'] for trace in traces])
-                Fneu_all = np.vstack([trace['neuropil_fluorescence'] for trace in traces])
-
-                # DO DARKFRAME CORRECTION
-                mean_darksignal = calculate_mean_darksignal(Fall, key)
-                print("mean_darksignal (will be subtracted): ", mean_darksignal)
-                
-                Fall = Fall - mean_darksignal
-                Fneu_all = Fneu_all - mean_darksignal
-                
-                # remove the neuropil fluorescence from the fluorescence signal
-                neu = 0
-                
-                # dF = Fall - neu * Fneu_all #TR: NP correcction for now
-                # Detrend by subtracting a scaled version of the neuropil fluorescence from the fluorescence signal and adding the median neuropil fluorescence in order to avoid negative values
-                
-                dF = (Fall - neu * Fneu_all) + (np.nanmedian(Fneu_all, axis=1, keepdims=True) * neu)
-                
-                print('Neuropil correction factor: ', neu)
-                
-                percentile = 8
-                print('Smoothing window size (in sec): ', smoothing_window / framerate)
-                print('Percentile for detrending and F0 calculation: ', percentile)
-                
-                # Function to compute the baseline (F0) for each trace using percentile filtering
-                def compute_F0(trace_dF,  smoothing_window, percentile = 8):
-                    return percentile_filter(trace_dF, percentile, size=int(smoothing_window))
-
-                # Parallelize the F0 computation across all traces using multiple jobs
-                F0 = np.array(Parallel(n_jobs=-1)(
-                    delayed(compute_F0)(dF[i, :], smoothing_window) for i in range(dF.shape[0])
-                ))
-
-                # Calculate ΔF/F0 for all traces (normalized fluorescence change)
-                dFF = (dF - F0) / F0
-
-                # Perform spike inference using the cascade model on the ΔF/F0 array
-                spikes = cascade.predict(model_name, dFF, verbosity=0)
-                    
-
-                # Initialize a list to store the inferred spikes for each trace
-                inferred_spikes = []
-
-                # For each trace, append the inferred spikes along with other trace information
-                for i,trace in enumerate(traces):
-                    inferred_spikes.append({
-                        **key,  # Include the key information
-                        'mask': trace['mask'],  # Include the mask for the trace
-                        'fluo_channel': trace['fluo_channel'],  # Include the fluorescence channel information
-                        'activity_trace': spikes[i, :]  # Store the inferred activity trace (spikes)
-                    })
-                    
-                # Insert results
-                self.insert1(key)
-                self.Trace.insert(inferred_spikes)
-
+            
   
         elif method == 'caiman':
             caiman_dataset = imaging_dataset

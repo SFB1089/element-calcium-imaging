@@ -977,12 +977,12 @@ class Activity(dj.Computed):
                 print('Percentile for detrending and F0 calculation: ', percentile)
                 
                 # Function to compute the baseline (F0) for each trace using percentile filtering
-                def compute_F0(trace_dF,  smoothing_window, percentile = 8):
+                def compute_F0(trace_dF,  smoothing_window, percentile):
                     return percentile_filter(trace_dF, percentile, size=int(smoothing_window))
 
                 # Parallelize the F0 computation across all traces using multiple jobs
                 F0 = np.array(Parallel(n_jobs=-1)(
-                    delayed(compute_F0)(dF[i, :], smoothing_window) for i in range(dF.shape[0])
+                    delayed(compute_F0)(dF[i, :], smoothing_window, percentile) for i in range(dF.shape[0])
                 ))
 
                 # Calculate ΔF/F0 for all traces (normalized fluorescence change)

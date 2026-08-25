@@ -1082,7 +1082,7 @@ def calculate_mean_darksignal(traces, scan_key, shuttertime=0.09):
         darkframe_shutter_end = (event.Event() & "event_type='shutter'" & scan_key).fetch('event_end_time')
         darkframetimes = [darkframe_shutter_end[0] + shuttertime, darkframe_shutter_start[1] - shuttertime]
         twoptimestamps = (event.Event() & 'event_type LIKE "%2p_frames%"' & scan_key).fetch('event_start_time')
-        darkframes = get_closest_timestamps(twoptimestamps, darkframetimes)
+        darkframes =  get_closest_timestamps(darkframetimes,twoptimestamps.astype('float'))
     except Exception:
         darkframes = [12, 24]  # Hardcoding! Problem: importing event already in imaging is problematic
         print("event.Event() not available, using hardcoded darkframes")

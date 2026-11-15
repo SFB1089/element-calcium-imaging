@@ -3,6 +3,17 @@
 Observes [Semantic Versioning](https://semver.org/spec/v2.0.0.html) standard and [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) convention.
 
 
+## [0.1.0b1] - 2026-11-15
+### Added
++ `dff.py`: one pure dF/F0 implementation, one recipe per parameter set (dark signal, neuropil factor/offset, detrending, baseline, F0 floor), validated and hashed
++ `imaging.DffParamSet`, `imaging.Dff0Task`, `imaging.Dff0` (+ `.Trace`): dF/F0 stored once per curation x recipe
++ `imaging.CascadeRecipe`: the dF/F0 recipe of each CASCADE extraction method
++ `imaging.Activity.CascadeInput`: the exact `Dff0`, model and code versions behind each new CASCADE activity
+### Changed
++ CASCADE in `Activity.make` reads `Dff0.Trace` instead of computing dF/F0 from rules on the method name; existing methods keep the recipe they used since 2026-09-03, so their spikes are unchanged
++ `calculate_mean_darksignal` is deprecated and delegates to `dff.resolve_dark` (Decimal cast and argument order fixed)
+
+
 ## [0.1.0b0] - 2021-05-07
 ### Added
 + First beta release

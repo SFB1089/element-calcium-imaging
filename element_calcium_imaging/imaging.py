@@ -884,22 +884,22 @@ class DffParamSet(dj.Lookup):
     dark_method            : varchar(16)    # 'none' | 'frames' (fixed frame range) | 'shutter' (shutter-closed window)
     dark_frame_start=null  : int            # 'frames': first frame; 'shutter': first fallback frame
     dark_frame_stop=null   : int            # last frame (exclusive)
-    dark_margin_s=null     : float          # [s] 'shutter': margin inside the shutter-closed interval
+    dark_margin_s=null     : double          # [s] 'shutter': margin inside the shutter-closed interval
     # 2 neuropil
-    neuropil_factor        : float          # a in F - a*Fneu (0 = no neuropil subtraction)
+    neuropil_factor        : double          # a in F - a*Fneu (0 = no neuropil subtraction)
     neuropil_offset        : varchar(8)     # added back: 'none' | 'median' (+a*median(Fneu)) | 'mean' (+a*mean(Fneu))
     # 3 detrending before the baseline
     detrend_method         : varchar(16)    # 'none' | 'linear' | 'highpass'
-    detrend_window_s=null  : float          # [s] 'highpass': moving-average window removed
+    detrend_window_s=null  : double          # [s] 'highpass': moving-average window removed
     # 4 baseline F0
     baseline_method        : varchar(24)    # 'running_percentile' | 'maximin' | 'global_percentile'
-    baseline_percentile=null : float        # percentile for running/global percentile
-    baseline_window_s=null : float          # [s] running window
-    baseline_smooth_s=null : float          # [s] gaussian pre-smoothing sigma ('maximin')
+    baseline_percentile=null : double        # percentile for running/global percentile
+    baseline_window_s=null : double          # [s] running window
+    baseline_smooth_s=null : double          # [s] gaussian pre-smoothing sigma ('maximin')
     baseline_step=1        : smallint       # running filter on every k-th frame, interpolated (1 = exact)
     # 5 F0 floor
     f0_floor_method        : varchar(24)    # 'none' | 'flag' | 'nan' | 'fraction_of_median_F' | 'quantile_of_F0'
-    f0_floor_value=null    : float          # fraction or quantile for the floor methods
+    f0_floor_value=null    : double          # fraction or quantile for the floor methods
     # anything a future method needs (part of the hash)
     extra=null             : longblob
     """
@@ -956,6 +956,25 @@ class Dff0Task(dj.Manual):
     """
 
 
+def _shutter_inputs(scan_key):
+    """(2P frame times, shutter starts, shutter ends) of a scan, or (None, None, None).
+
+    Returns None values when the event schema is not activated in this process or the
+    events are missing, so that ``dff.resolve_dark`` applies the recipe's fallback frames
+    (and records it), as the legacy ``calculate_mean_darksignal`` did.
+    """
+    try:
+        frame_times = (event.Event & scan_key & 'event_type LIKE "%%2p_frames%%"').fetch(
+            "event_start_time", order_by="event_start_time").astype(float)
+        starts, ends = (event.Event & scan_key & "event_type='shutter'").fetch(
+            "event_start_time", "event_end_time", order_by="event_start_time")
+    except Exception:
+        return None, None, None
+    starts = np.asarray(starts, dtype=float)
+    ends = np.asarray([np.nan if e is None else float(e) for e in ends])
+    return frame_times, starts, ends
+
+
 @schema
 class Dff0(dj.Computed):
     definition = """
@@ -1005,12 +1024,8 @@ class Dff0(dj.Computed):
         rec = DffParamSet.recipe(key)
         frame_times = starts = ends = None
         if rec["dark_method"] == "shutter":
-            frame_times = (event.Event & scan_key & 'event_type LIKE "%%2p_frames%%"').fetch(
-                "event_start_time", order_by="event_start_time").astype(float)
-            starts, ends = (event.Event & scan_key & "event_type='shutter'").fetch(
-                "event_start_time", "event_end_time", order_by="event_start_time")
-            starts = np.asarray(starts, dtype=float)
-            ends = np.asarray([np.nan if e is None else float(e) for e in ends])
+            frame_times, starts, ends = _shutter_inputs(scan_key)
+        # missing inputs -> the recipe's fallback frames; Dff0.dark_source records 'fallback_frames'
         out = dff.compute_dff0(F, Fneu, fps, rec, frame_times, starts, ends, n_jobs=-1)
         self.insert1({
             **key, "fps": fps, "n_masks": int(F.shape[0]), "n_frames": int(F.shape[1]),
@@ -1204,15 +1219,7 @@ def calculate_mean_darksignal(traces, scan_key, shuttertime=0.09):
     else:
         F = np.vstack(traces)
     rec = dff.normalise_recipe(dict(dff.KNOWN_RECIPES[2][1]))
-    try:
-        frame_times = (event.Event & scan_key & 'event_type LIKE "%%2p_frames%%"').fetch(
-            'event_start_time', order_by='event_start_time').astype(float)
-        starts, ends = (event.Event & scan_key & "event_type='shutter'").fetch(
-            'event_start_time', 'event_end_time', order_by='event_start_time')
-        starts = np.asarray(starts, dtype=float)
-        ends = np.asarray([np.nan if e is None else float(e) for e in ends])
-    except Exception:
-        frame_times = starts = ends = None
+    frame_times, starts, ends = _shutter_inputs(scan_key)
     rec['dark_margin_s'] = float(shuttertime)
     value, _, _, _ = dff.resolve_dark(rec, F, frame_times, starts, ends)
     return value

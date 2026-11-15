@@ -154,3 +154,31 @@ def test_existing_methods_keep_the_post_fix_recipe():
 def test_element_version_has_commit_and_file_hash():
     v = D.element_version()
     assert "+" in v and len(v.split("+")[1]) == 12
+
+
+# ---------------------------------------------------------------- review regressions
+
+def _dffparamset_definition():
+    import os
+    src = open(os.path.join(os.path.dirname(D.__file__), "imaging.py")).read()
+    i = src.index("class DffParamSet(dj.Lookup):")
+    j = src.index('"""', src.index('definition = """', i) + len('definition = """'))
+    return src[i:j]
+
+
+def test_recipe_numerics_are_stored_as_double():
+    # MySQL FLOAT is single precision: 0.7 would come back as 0.699999988..., changing the
+    # recipe hash on a round trip and the parameters the database-backed make computes with
+    definition = _dffparamset_definition()
+    numeric = [c for c, default in D.RECIPE_COLUMNS.items()
+               if c not in ("dark_frame_start", "dark_frame_stop", "baseline_step", "extra")
+               and not c.endswith("_method") and c != "neuropil_offset"]
+    for col in numeric:
+        line = next(l for l in definition.splitlines() if l.strip().startswith(col))
+        assert ": double" in line, line
+
+
+def test_single_precision_round_trip_would_change_the_hash():
+    rec = D.normalise_recipe(D.KNOWN_RECIPES[2][1])
+    rounded = dict(rec, neuropil_factor=float(np.float32(rec["neuropil_factor"])))
+    assert D.recipe_hash(rec) != D.recipe_hash(rounded)

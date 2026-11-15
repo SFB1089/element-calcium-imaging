@@ -371,18 +371,14 @@ KNOWN_RECIPES = {
               f0_floor_method="flag")),
 }
 
-#: Recipe registered for the methods' post-fix behaviour that no row was ever written with before.
-KNOWN_RECIPES[11] = ("CASCADE no neuropil p8 since 2026-09-03: shutter dark (fallback 12-24), neuropil 0, running p8 / 60 s",
-                     dict(_CASCADE, **_NEW_DARK, neuropil_factor=0.0, baseline_percentile=8))
-
 #: imaging.CascadeRecipe contents: extraction_method -> recipe used by Activity.make from now on.
+#: Methods without a row here (no_neuropil variants) are not computed by the new code.
 #: Identical to what the in-place-edited code on BUGPU computed since 2026-09-03 (verified,
 #: adamacs_ingest PR #25), so existing methods keep producing the same spikes.
 CASCADE_RECIPES = {
     "cascade_inference": 2,
     "cascade_inference_25ms_filter": 2,
     "cascade_inference_global_causal": 2,
-    "cascade_inference_no_neuropil": 11,
 }
 
 #: Provenance of the LEGACY rows: extraction_method -> (recipe before the 2026-09-03 code change, recipe since)

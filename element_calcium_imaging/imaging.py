@@ -11,6 +11,7 @@ from element_session import session_with_id as session
 from element_event import event
 
 from . import scan
+from . import dff
 from .scan import get_imaging_root_data_dir, get_processed_root_data_dir, get_scan_image_files, get_scan_box_files, get_nd2_files
 from scipy.ndimage import percentile_filter
 from joblib import Parallel, delayed
@@ -840,7 +841,10 @@ class ActivityExtractionMethod(dj.Lookup):
     extraction_method: varchar(32)
     """
 
-    contents = zip(['suite2p_deconvolution', 'caiman_deconvolution', 'caiman_dff', 'cascade_inference', 'cascade_inference_no_neuropil', 'cascade_inference_11', 'cascade_inference_no_neuropil_11'])
+    contents = zip(['suite2p_deconvolution', 'caiman_deconvolution', 'caiman_dff', 'cascade_inference',
+                    'cascade_inference_no_neuropil', 'cascade_inference_11', 'cascade_inference_no_neuropil_11',
+                    'cascade_inference_25ms_filter', 'cascade_inference_global_causal'])
+
 
 @schema
 class ActivityCascadeModel(dj.Lookup):
@@ -851,6 +855,7 @@ class ActivityCascadeModel(dj.Lookup):
     model_description='': varchar(1000)  # Description of the model
     """
 
+
 @schema
 class ActivityCascadeTask(dj.Manual):
     definition = """  # Task for CASCADE spike inference
@@ -859,6 +864,190 @@ class ActivityCascadeTask(dj.Manual):
     ---
     -> ActivityCascadeModel
     """
+
+
+# ------------------------------- dF/F0 ---------------------------------------------
+# One recipe per DffParamSet row, one pure implementation (element_calcium_imaging.dff),
+# stored once per curation x recipe in Dff0. CASCADE reads Dff0 (see CascadeRecipe, Activity).
+
+
+@schema
+class DffParamSet(dj.Lookup):
+    definition = """
+    # One dF/F0 recipe. Steps run in the order of the column groups. Same recipe -> same hash. Never edited.
+    dff_paramset_idx       : smallint
+    ---
+    dff_desc               : varchar(255)   # plain language
+    dff_hash               : uuid           # hash of all recipe columns (normalised)
+    unique index (dff_hash)
+    # 1 dark signal
+    dark_method            : varchar(16)    # 'none' | 'frames' (fixed frame range) | 'shutter' (shutter-closed window)
+    dark_frame_start=null  : int            # 'frames': first frame; 'shutter': first fallback frame
+    dark_frame_stop=null   : int            # last frame (exclusive)
+    dark_margin_s=null     : float          # [s] 'shutter': margin inside the shutter-closed interval
+    # 2 neuropil
+    neuropil_factor        : float          # a in F - a*Fneu (0 = no neuropil subtraction)
+    neuropil_offset        : varchar(8)     # added back: 'none' | 'median' (+a*median(Fneu)) | 'mean' (+a*mean(Fneu))
+    # 3 detrending before the baseline
+    detrend_method         : varchar(16)    # 'none' | 'linear' | 'highpass'
+    detrend_window_s=null  : float          # [s] 'highpass': moving-average window removed
+    # 4 baseline F0
+    baseline_method        : varchar(24)    # 'running_percentile' | 'maximin' | 'global_percentile'
+    baseline_percentile=null : float        # percentile for running/global percentile
+    baseline_window_s=null : float          # [s] running window
+    baseline_smooth_s=null : float          # [s] gaussian pre-smoothing sigma ('maximin')
+    baseline_step=1        : smallint       # running filter on every k-th frame, interpolated (1 = exact)
+    # 5 F0 floor
+    f0_floor_method        : varchar(24)    # 'none' | 'flag' | 'nan' | 'fraction_of_median_F' | 'quantile_of_F0'
+    f0_floor_value=null    : float          # fraction or quantile for the floor methods
+    # anything a future method needs (part of the hash)
+    extra=null             : longblob
+    """
+
+    contents = [{"dff_paramset_idx": idx, "dff_desc": desc, "dff_hash": dff.recipe_hash(rec),
+                 **dff.normalise_recipe(rec)} for idx, (desc, rec) in dff.KNOWN_RECIPES.items()]
+
+    @classmethod
+    def insert_new_params(cls, dff_paramset_idx: int, dff_desc: str, **params):
+        """Validate, normalise and hash a recipe, then insert it.
+
+        Refuses a recipe that already exists under another index (same hash) and an index
+        that holds a different recipe. Re-inserting an identical row is a no-op.
+        """
+        rec = dff.normalise_recipe(params)
+        h = dff.recipe_hash(rec)
+        same = (cls & {"dff_hash": h}).fetch("dff_paramset_idx")
+        if len(same) and int(same[0]) != int(dff_paramset_idx):
+            raise dj.DataJointError(f"this recipe already exists as dff_paramset_idx={int(same[0])}")
+        taken = cls & {"dff_paramset_idx": dff_paramset_idx}
+        if taken and taken.fetch1("dff_hash") != h:
+            raise dj.DataJointError(f"dff_paramset_idx={dff_paramset_idx} holds a different recipe")
+        cls.insert1({"dff_paramset_idx": dff_paramset_idx, "dff_desc": dff_desc, "dff_hash": h, **rec},
+                    skip_duplicates=True)
+
+    @classmethod
+    def recipe(cls, key) -> dict:
+        """The recipe columns of one row, as the dict dff.compute_dff0 takes."""
+        row = (cls & key).fetch1()
+        return {k: row[k] for k in dff.RECIPE_COLUMNS}
+
+
+@schema
+class CascadeRecipe(dj.Lookup):
+    definition = """
+    # The dF/F0 recipe a CASCADE extraction method uses (replaces the rules on the method name)
+    -> ActivityExtractionMethod
+    ---
+    -> DffParamSet
+    """
+
+    contents = [{"extraction_method": m, "dff_paramset_idx": i} for m, i in dff.CASCADE_RECIPES.items()]
+
+
+@schema
+class Dff0Task(dj.Manual):
+    definition = """
+    # dF/F0 asked for outside CASCADE (responsiveness, notebooks). CASCADE needs no task here.
+    -> Fluorescence
+    -> DffParamSet
+    ---
+    task_owner           : varchar(32)
+    task_note=''         : varchar(255)
+    """
+
+
+@schema
+class Dff0(dj.Computed):
+    definition = """
+    # dF/F0 of every mask of one curation under one recipe, computed once and stored
+    -> Fluorescence
+    -> DffParamSet
+    ---
+    fps                  : float          # [Hz] scan.ScanInfo.fps used for the windows
+    n_masks              : int            # rows (mask x fluo_channel)
+    n_frames             : int
+    dark_signal          : float          # [a.u.] subtracted from F and Fneu
+    dark_frame_start=null: int            # first frame of the dark window actually used
+    dark_frame_stop=null : int            # last frame (exclusive)
+    dark_source          : varchar(16)    # 'shutter' | 'frames' | 'fallback_frames' (no usable shutter events) | 'none'
+    n_f0_nonpositive     : int            # masks whose F0 is <= 0 somewhere
+    element_version      : varchar(32)    # dff.element_version(): commit + hash of imaging.py/dff.py
+    compute_seconds      : float
+    """
+
+    class Trace(dj.Part):
+        definition = """
+        # dF/F0 of one mask
+        -> master
+        -> Fluorescence.Trace
+        ---
+        dff                  : blob@external-raw   # float32 dF/F0 per frame
+        f0_median            : float          # [a.u.] median baseline
+        f0_min               : float          # [a.u.] minimum baseline
+        f0_nonpositive       : bool           # F0 <= 0 somewhere: dF/F0 is sign-inverted there
+        """
+
+    @property
+    def key_source(self):
+        # Only what is needed: the recipe of every CASCADE task, and explicit Dff0Task rows.
+        need_keys = list(Fluorescence.primary_key) + ["dff_paramset_idx"]
+        for_cascade = dj.U(*need_keys) & (ActivityCascadeTask * CascadeRecipe)
+        return (Fluorescence * DffParamSet).proj() & [for_cascade, Dff0Task.proj()]
+
+    def make(self, key):
+        import time
+        t0 = time.time()
+        scan_key = {"session_id": key["session_id"], "scan_id": key["scan_id"]}
+        keys, F, Fneu = (Fluorescence.Trace & key).fetch(
+            "KEY", "fluorescence", "neuropil_fluorescence", order_by="mask, fluo_channel")
+        F, Fneu = np.vstack(F), np.vstack(Fneu)
+        fps = float((scan.ScanInfo & scan_key).fetch1("fps"))
+        rec = DffParamSet.recipe(key)
+        frame_times = starts = ends = None
+        if rec["dark_method"] == "shutter":
+            frame_times = (event.Event & scan_key & 'event_type LIKE "%%2p_frames%%"').fetch(
+                "event_start_time", order_by="event_start_time").astype(float)
+            starts, ends = (event.Event & scan_key & "event_type='shutter'").fetch(
+                "event_start_time", "event_end_time", order_by="event_start_time")
+            starts = np.asarray(starts, dtype=float)
+            ends = np.asarray([np.nan if e is None else float(e) for e in ends])
+        out = dff.compute_dff0(F, Fneu, fps, rec, frame_times, starts, ends, n_jobs=-1)
+        self.insert1({
+            **key, "fps": fps, "n_masks": int(F.shape[0]), "n_frames": int(F.shape[1]),
+            "dark_signal": out["dark_signal"], "dark_frame_start": out["dark_frame_start"],
+            "dark_frame_stop": out["dark_frame_stop"], "dark_source": out["dark_source"],
+            "n_f0_nonpositive": int(out["f0_nonpositive"].sum()), "element_version": dff.element_version(),
+            "compute_seconds": time.time() - t0})
+        self.Trace.insert(
+            {**key, **k, "dff": out["dff"][i], "f0_median": float(out["f0_median"][i]),
+             "f0_min": float(out["f0_min"][i]), "f0_nonpositive": bool(out["f0_nonpositive"][i])}
+            for i, k in enumerate(keys))
+
+
+# ------------------------------- activity --------------------------------------------
+
+_CASCADE_DIRS = ('/home/backup_user/github/Cascade', '/home/backup_user/Cascade')
+
+
+def _import_cascade():
+    """Import cascade2p from the lab checkout; return (module, checkout dir, git commit)."""
+    for d in _CASCADE_DIRS:
+        if os.path.isdir(d):
+            if d not in sys.path:
+                sys.path.append(d)
+            os.chdir(d)  # cascade.predict reads Pretrained_models/ relative to the cwd
+            from cascade2p import cascade
+            try:
+                commit = subprocess.check_output(['git', '-C', d, 'rev-parse', 'HEAD'],
+                                                 stderr=subprocess.DEVNULL).decode().strip()
+                dirty = subprocess.call(['git', '-C', d, 'diff', '--quiet', '--', 'cascade2p'],
+                                        stderr=subprocess.DEVNULL) != 0
+                commit = commit[:12] + ('-dirty' if dirty else '')
+            except Exception:
+                commit = 'unknown'
+            return cascade, d, commit
+    raise FileNotFoundError(f"Cascade checkout not found in {_CASCADE_DIRS}")
+
 
 @schema
 class Activity(dj.Computed):
@@ -875,6 +1064,18 @@ class Activity(dj.Computed):
         activity_trace: blob@external-raw    # 
         """
 
+    class CascadeInput(dj.Part):
+        definition = """
+        # What produced this CASCADE activity (rows exist for activities computed by this code version onwards)
+        -> master
+        ---
+        -> Dff0                           # the exact dF/F0 used; deleting that Dff0 removes this activity
+        -> ActivityCascadeModel           # the model at compute time (the task row may change later)
+        cascade_commit       : varchar(24)    # git commit of the Cascade checkout ('-dirty' if cascade2p is edited)
+        element_version      : varchar(32)    # dff.element_version()
+        computed_at          : datetime
+        """
+
     @property
     def key_source(self):
         suite2p_key_source = (Fluorescence * ActivityExtractionMethod
@@ -885,18 +1086,19 @@ class Activity(dj.Computed):
                              * ProcessingParamSet.proj('processing_method')
                              & 'processing_method = "caiman"'
                              & 'extraction_method LIKE "caiman%"')
-        cascade_key_source = (Fluorescence * ProcessingParamSet.proj('processing_method') 
-                              * ActivityCascadeTask)
+        # CASCADE: a task whose method has a recipe, and whose dF/F0 exists already
+        cascade_key_source = (Fluorescence * ProcessingParamSet.proj('processing_method')
+                              * ActivityCascadeTask * CascadeRecipe) & Dff0
 
         return suite2p_key_source.proj() + caiman_key_source.proj() + cascade_key_source.proj()
-        # return suite2p_key_source.proj() + caiman_key_source.proj()
 
     def make(self, key):
-        # print(cascade_key_source)
+        if CascadeRecipe & key:
+            return self._make_cascade(key)
+
         method, imaging_dataset = get_loader_result(key, Curation)
 
         if method == 'suite2p':
-            
             if key['extraction_method'] == 'suite2p_deconvolution':
                 suite2p_dataset = imaging_dataset
                 # ---- iterate through all s2p plane outputs ----
@@ -910,106 +1112,10 @@ class Activity(dj.Computed):
 
                 self.insert1(key)
                 self.Trace.insert(spikes)
-                
-            elif 'cascade_inference' in key['extraction_method']:
-                if os.path.isdir('/home/backup_user/github/Cascade'):
-                # Append the path and change the directory
-                    sys.path.append('/home/backup_user/github/Cascade')
-                    os.chdir('/home/backup_user/github/Cascade')
-                    from cascade2p import cascade
-                elif os.path.isdir('/home/backup_user/Cascade'):
-                    # Append the path and change the directory
-                    sys.path.append('/home/backup_user/Cascade')
-                    os.chdir('/home/backup_user/Cascade')
-                    from cascade2p import cascade
-                else:
-                    print("Cascade Directory does not exist")
-                
-                # # Select GPU with least memory usage
-                # os.environ["CUDA_VISIBLE_DEVICES"] = str(min(range(4), key=lambda i: int(subprocess.check_output(
-                #     f"nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits -i {i}", shell=True).strip())))
-                
-                # Fetch the fluorescence traces from the database, ordered by mask
-                traces = (Fluorescence.Trace & key).fetch(as_dict=True, order_by="mask")
+            else:
+                raise NotImplementedError(
+                    f"{key['extraction_method']}: not a suite2p method and no CascadeRecipe row")
 
-                # Fetch the model parameters based on the model name
-                model_key = (ActivityCascadeTask &  key)
-                model_name, model_path = (ActivityCascadeModel & ActivityCascadeTask &  key & model_key).fetch1('model_name', 'model_path')
-
-                # Calculate the smoothing window size (in samples), assuming it’s 60 seconds of data
-                framerate = (scan.ScanInfo & key).fetch1('fps')
-                smoothing_window = framerate * 60
-
-                # Stack the fluorescence and neuropil fluorescence traces for all timepoints
-                Fall = np.vstack([trace['fluorescence'] for trace in traces])
-                Fneu_all = np.vstack([trace['neuropil_fluorescence'] for trace in traces])
-
-                # DO DARKFRAME CORRECTION
-                mean_darksignal = calculate_mean_darksignal(Fall, key)
-                print("mean_darksignal (will be subtracted): ", mean_darksignal)
-                
-                Fall = Fall - mean_darksignal
-                Fneu_all = Fneu_all - mean_darksignal
-                
-                # remove the neuropil fluorescence from the fluorescence signal
-                if key['extraction_method'] == 'cascade_inference':
-                    neu = 0.7
-                    percentile = 8
-                elif key['extraction_method'] == 'cascade_inference_no_neuropil':
-                    neu = 0
-                    percentile = 8
-                elif key['extraction_method'] == 'cascade_inference_no_neuropil_11':
-                    neu = 0
-                    percentile = 11
-                elif key['extraction_method'] == 'cascade_inference_11':
-                    neu = 0.7
-                    percentile = 11
-                                    
-                
-                # dF = Fall - neu * Fneu_all #TR: NP correcction for now
-                # Detrend by subtracting a scaled version of the neuropil fluorescence from the fluorescence signal and adding the median neuropil fluorescence in order to avoid negative values
-                
-                dF = (Fall - neu * Fneu_all) + (np.nanmedian(Fneu_all, axis=1, keepdims=True) * neu)
-                
-                print('Neuropil correction factor: ', neu)
-                                
-                print('Smoothing window size (in sec): ', smoothing_window / framerate)
-                print('Percentile for detrending and F0 calculation: ', percentile)
-                
-                # Function to compute the baseline (F0) for each trace using percentile filtering
-                def compute_F0(trace_dF,  smoothing_window, percentile):
-                    return percentile_filter(trace_dF, percentile, size=int(smoothing_window))
-
-                # Parallelize the F0 computation across all traces using multiple jobs
-                F0 = np.array(Parallel(n_jobs=-1)(
-                    delayed(compute_F0)(dF[i, :], smoothing_window, percentile) for i in range(dF.shape[0])
-                ))
-
-                # Calculate ΔF/F0 for all traces (normalized fluorescence change)
-                dFF = (dF - F0) / F0
-
-                # Perform spike inference using the cascade model on the ΔF/F0 array
-                spikes = cascade.predict(model_name, dFF, verbosity=0)
-                    
-
-                # Initialize a list to store the inferred spikes for each trace
-                inferred_spikes = []
-
-                # For each trace, append the inferred spikes along with other trace information
-                for i,trace in enumerate(traces):
-                    inferred_spikes.append({
-                        **key,  # Include the key information
-                        'mask': trace['mask'],  # Include the mask for the trace
-                        'fluo_channel': trace['fluo_channel'],  # Include the fluorescence channel information
-                        'activity_trace': spikes[i, :]  # Store the inferred activity trace (spikes)
-                    })
-                    
-                # Insert results
-                self.insert1(key)
-                self.Trace.insert(inferred_spikes)
-        
-            
-  
         elif method == 'caiman':
             caiman_dataset = imaging_dataset
 
@@ -1031,6 +1137,24 @@ class Activity(dj.Computed):
                 self.Trace.insert(activities)
         else:
             raise NotImplementedError('Unknown/unimplemented method: {}'.format(method))
+
+    def _make_cascade(self, key):
+        """CASCADE on the stored dF/F0 of the method's recipe (CascadeRecipe -> Dff0)."""
+        from datetime import datetime
+        cascade, _, cascade_commit = _import_cascade()
+        fkey = {k: key[k] for k in Fluorescence.primary_key}
+        dff_idx = (CascadeRecipe & key).fetch1('dff_paramset_idx')
+        dkey = {**fkey, 'dff_paramset_idx': dff_idx}
+        tkeys, dff_rows = (Dff0.Trace & dkey).fetch('KEY', 'dff', order_by='mask, fluo_channel')
+        model_name = (ActivityCascadeTask & key).fetch1('model_name')
+        spikes = cascade.predict(model_name, np.vstack(dff_rows), verbosity=0)
+        self.insert1(key)
+        self.Trace.insert({**key, 'mask': t['mask'], 'fluo_channel': t['fluo_channel'],
+                           'activity_trace': spikes[i, :]} for i, t in enumerate(tkeys))
+        self.CascadeInput.insert1({**key, 'dff_paramset_idx': dff_idx, 'model_name': model_name,
+                                   'cascade_commit': cascade_commit,
+                                   'element_version': dff.element_version(),
+                                   'computed_at': datetime.now()})
 
 # ---------------- HELPER FUNCTIONS ----------------
 
@@ -1065,40 +1189,33 @@ def get_loader_result(key, table):
     return method, loaded_dataset
 
 
-# Function to calculate the mean darksignal of the mean of all traces for a given scan and shuttertime
 def calculate_mean_darksignal(traces, scan_key, shuttertime=0.09):
-    """
-    Calculate the mean darksignal of the mean of all traces for a given scan and shuttertime.
-    Args:
-        traces: list or array of fluorescence traces (each trace is 1D array or dict with 'fluorescence' key)
-        scan_key: DataJoint key for the scan
-        shuttertime: float, shutter time offset (default: 0.09)
-    Returns:
-        mean_darksignal: float, mean darksignal value
-    """
-    # Get darkframe times
-    try:
-        darkframe_shutter_start = (event.Event() & "event_type='shutter'" & scan_key).fetch('event_start_time')
-        darkframe_shutter_end = (event.Event() & "event_type='shutter'" & scan_key).fetch('event_end_time')
-        darkframetimes = [darkframe_shutter_end[0] + shuttertime, darkframe_shutter_start[1] - shuttertime]
-        twoptimestamps = (event.Event() & 'event_type LIKE "%2p_frames%"' & scan_key).fetch('event_start_time')
-        darkframes =  get_closest_timestamps(darkframetimes,twoptimestamps.astype('float'))
-    except Exception:
-        darkframes = [12, 24]  # Hardcoding! Problem: importing event already in imaging is problematic
-        print("event.Event() not available, using hardcoded darkframes")
-        print("darkframes: ", darkframes)
+    """Deprecated: the dark signal is now a step of the dF/F0 recipe (``dff.resolve_dark``).
 
-    # Stack traces if needed
+    Kept so external callers keep working. Uses the shutter-closed window (correct argument
+    order, Decimal event times cast to float) and falls back to frames 12-24, the same
+    behaviour as ``DffParamSet`` recipes with ``dark_method='shutter'``.
+    """
+    import warnings
+    warnings.warn("calculate_mean_darksignal is deprecated; use imaging.Dff0 / dff.compute_dff0",
+                  DeprecationWarning, stacklevel=2)
     if isinstance(traces[0], dict) and 'fluorescence' in traces[0]:
-        traces_stack = np.vstack([tr['fluorescence'] for tr in traces])
+        F = np.vstack([tr['fluorescence'] for tr in traces])
     else:
-        traces_stack = np.vstack(traces)
-    average_trace = np.mean(traces_stack, axis=0)
-    mean_darksignal = np.mean(average_trace[darkframes[0]:darkframes[-1]])
-    return mean_darksignal
-
-# Example usage:
-# mean_darksignal = calculate_mean_darksignal(traces, scan_key)
+        F = np.vstack(traces)
+    rec = dff.normalise_recipe(dict(dff.KNOWN_RECIPES[2][1]))
+    try:
+        frame_times = (event.Event & scan_key & 'event_type LIKE "%%2p_frames%%"').fetch(
+            'event_start_time', order_by='event_start_time').astype(float)
+        starts, ends = (event.Event & scan_key & "event_type='shutter'").fetch(
+            'event_start_time', 'event_end_time', order_by='event_start_time')
+        starts = np.asarray(starts, dtype=float)
+        ends = np.asarray([np.nan if e is None else float(e) for e in ends])
+    except Exception:
+        frame_times = starts = ends = None
+    rec['dark_margin_s'] = float(shuttertime)
+    value, _, _, _ = dff.resolve_dark(rec, F, frame_times, starts, ends)
+    return value
 
 
 # Function to find the closest timestamp in a series

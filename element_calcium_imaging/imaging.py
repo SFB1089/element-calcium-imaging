@@ -1162,7 +1162,12 @@ class Activity(dj.Computed):
         dkey = {**fkey, 'dff_paramset_idx': dff_idx}
         tkeys, dff_rows = (Dff0.Trace & dkey).fetch('KEY', 'dff', order_by='mask, fluo_channel')
         model_name = (ActivityCascadeTask & key).fetch1('model_name')
-        spikes = cascade.predict(model_name, np.vstack(dff_rows), verbosity=0)
+        X = np.vstack(dff_rows)
+        # rows without fluorescence (Dff0 stores NaN for suite2p ROIs with F = 0) stay NaN: no noise level, no model
+        ok = np.isfinite(X).any(axis=1)
+        spikes = np.full(X.shape, np.nan)
+        if ok.any():
+            spikes[ok] = cascade.predict(model_name, X[ok], verbosity=0)
         self.insert1(key)
         self.Trace.insert({**key, 'mask': t['mask'], 'fluo_channel': t['fluo_channel'],
                            'activity_trace': spikes[i, :]} for i, t in enumerate(tkeys))

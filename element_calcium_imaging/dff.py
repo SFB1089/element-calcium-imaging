@@ -279,6 +279,13 @@ def empty_rois(F):
     return ~np.any(np.isfinite(F) & (F != 0), axis=1)
 
 
+def roi_qc_reject(criterion, F_rows):
+    """Rejection flag per ROI for one imaging.RoiQCCriterion; F_rows: sequence of 1-D fluorescence traces."""
+    if criterion == "empty_f":
+        return [bool(empty_rois(np.asarray(f, dtype=float)[None, :])[0]) for f in F_rows]
+    raise ValueError(f"unknown ROI QC criterion {criterion!r}")
+
+
 def compute_dff0(F, Fneu, fps, rec, frame_times=None, shutter_starts=None, shutter_ends=None,
                  n_jobs=1, return_intermediates=False):
     """dF/F0 of all masks of one curation under one recipe.

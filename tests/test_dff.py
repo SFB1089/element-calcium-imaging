@@ -202,3 +202,10 @@ def test_empty_roi_is_blanked_and_flagged_others_unchanged():
 def test_empty_rois_detects_zero_and_nonfinite_rows():
     F = np.array([[0.0, 0.0], [np.nan, np.nan], [0.0, np.nan], [0.0, 1.0]])
     assert D.empty_rois(F).tolist() == [True, True, True, False]
+
+
+def test_roi_qc_reject_empty_f_and_unknown_criterion():
+    rows = [np.zeros(5), np.arange(5.0), np.full(5, np.nan)]
+    assert D.roi_qc_reject("empty_f", rows) == [True, False, True]
+    with pytest.raises(ValueError, match="unknown ROI QC criterion"):
+        D.roi_qc_reject("kurtosis", rows)

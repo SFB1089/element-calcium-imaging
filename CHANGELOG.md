@@ -3,6 +3,15 @@
 Observes [Semantic Versioning](https://semver.org/spec/v2.0.0.html) standard and [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) convention.
 
 
+## [0.1.0b2] - unreleased
+### Added
++ `imaging.RoiQCCriterion` (Lookup) and `imaging.RoiQC` (+ `.Rejected`): ROIs rejected per QC criterion and curation; first criterion `empty_f` = fluorescence 0 (or non-finite) in every frame (suite2p: every pixel overlaps another ROI). Exclude `RoiQC.Rejected` in queries
++ `dff.empty_rois(F)`, `dff.roi_qc_reject(criterion, F_rows)`
+### Changed
++ `dff.compute_dff0` stores NaN dF/F0 for empty ROIs (and returns `f_empty`); all other rows unchanged
++ CASCADE in `Activity.make` leaves rows without a finite dF/F0 NaN instead of passing them to the model
+
+
 ## [0.1.0b1] - 2026-11-15
 ### Added
 + `dff.py`: one pure dF/F0 implementation, one recipe per parameter set (dark signal, neuropil factor/offset, detrending, baseline, F0 floor), validated and hashed

@@ -182,3 +182,30 @@ def test_single_precision_round_trip_would_change_the_hash():
     rec = D.normalise_recipe(D.KNOWN_RECIPES[2][1])
     rounded = dict(rec, neuropil_factor=float(np.float32(rec["neuropil_factor"])))
     assert D.recipe_hash(rec) != D.recipe_hash(rounded)
+
+
+# ---------------------------------------------------------------- ROIs without fluorescence
+
+def test_empty_roi_is_blanked_and_flagged_others_unchanged():
+    rng = np.random.default_rng(1)
+    F = 1000 + 50 * rng.standard_normal((3, 4000))
+    Fneu = 800 + 50 * rng.standard_normal((3, 4000))
+    rec = _recipe()
+    ref = D.compute_dff0(F, Fneu, 30.0, rec)
+    F2 = F.copy(); F2[1] = 0.0                       # suite2p: every pixel of ROI 1 overlaps another ROI
+    out = D.compute_dff0(F2, Fneu, 30.0, rec)
+    assert out["f_empty"].tolist() == [False, True, False]
+    assert np.all(np.isnan(out["dff"][1]))
+    np.testing.assert_array_equal(out["dff"][[0, 2]], ref["dff"][[0, 2]])   # dark 'none': other rows identical
+
+
+def test_empty_rois_detects_zero_and_nonfinite_rows():
+    F = np.array([[0.0, 0.0], [np.nan, np.nan], [0.0, np.nan], [0.0, 1.0]])
+    assert D.empty_rois(F).tolist() == [True, True, True, False]
+
+
+def test_roi_qc_reject_empty_f_and_unknown_criterion():
+    rows = [np.zeros(5), np.arange(5.0), np.full(5, np.nan)]
+    assert D.roi_qc_reject("empty_f", rows) == [True, False, True]
+    with pytest.raises(ValueError, match="unknown ROI QC criterion"):
+        D.roi_qc_reject("kurtosis", rows)

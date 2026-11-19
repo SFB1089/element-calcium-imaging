@@ -836,6 +836,47 @@ class Fluorescence(dj.Computed):
 
 
 @schema
+class RoiQCCriterion(dj.Lookup):
+    definition = """
+    # A reason to reject an ROI from every trace derived from it, decided on Fluorescence alone. Never edited:
+    # a new criterion is a new row (and a branch in dff.roi_qc_reject); RoiQC computes it without touching the others.
+    roi_qc_criterion     : varchar(32)
+    ---
+    criterion_desc       : varchar(255)
+    """
+    contents = [
+        ("empty_f", "F is 0 (or non-finite) in every frame: suite2p leaves pixels shared with other ROIs out of F, "
+                    "so an ROI whose pixels all overlap others has no fluorescence; derived traces are neuropil only"),
+    ]
+
+
+@schema
+class RoiQC(dj.Computed):
+    definition = """
+    # ROIs rejected by one QC criterion in one curation. Dff0 and the CASCADE Activity store NaN for 'empty_f' ROIs
+    # from roselab-0.1.0b2 on; rows computed earlier, and suite2p's own traces, are not blanked: exclude
+    # RoiQC.Rejected in queries.
+    -> Fluorescence
+    -> RoiQCCriterion
+    ---
+    n_rois               : int            # Fluorescence.Trace rows checked
+    n_rejected           : int            # rows of RoiQC.Rejected
+    """
+
+    class Rejected(dj.Part):
+        definition = """
+        -> master
+        -> Fluorescence.Trace
+        """
+
+    def make(self, key):
+        keys, F = (Fluorescence.Trace & key).fetch("KEY", "fluorescence", order_by="mask, fluo_channel")
+        bad = dff.roi_qc_reject(key["roi_qc_criterion"], F)
+        self.insert1({**key, "n_rois": len(keys), "n_rejected": int(sum(bad))})
+        self.Rejected.insert({**key, **k} for k, b in zip(keys, bad) if b)
+
+
+@schema
 class ActivityExtractionMethod(dj.Lookup):
     definition = """
     extraction_method: varchar(32)
@@ -1162,7 +1203,12 @@ class Activity(dj.Computed):
         dkey = {**fkey, 'dff_paramset_idx': dff_idx}
         tkeys, dff_rows = (Dff0.Trace & dkey).fetch('KEY', 'dff', order_by='mask, fluo_channel')
         model_name = (ActivityCascadeTask & key).fetch1('model_name')
-        spikes = cascade.predict(model_name, np.vstack(dff_rows), verbosity=0)
+        X = np.vstack(dff_rows)
+        # rows without fluorescence (Dff0 stores NaN for suite2p ROIs with F = 0) stay NaN: no noise level, no model
+        ok = np.isfinite(X).any(axis=1)
+        spikes = np.full(X.shape, np.nan)
+        if ok.any():
+            spikes[ok] = cascade.predict(model_name, X[ok], verbosity=0)
         self.insert1(key)
         self.Trace.insert({**key, 'mask': t['mask'], 'fluo_channel': t['fluo_channel'],
                            'activity_trace': spikes[i, :]} for i, t in enumerate(tkeys))

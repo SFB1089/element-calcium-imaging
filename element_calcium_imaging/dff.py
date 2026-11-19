@@ -272,6 +272,20 @@ def baseline(X, rec, fps, n_jobs=1):
 # Steps 5-6 and the whole recipe
 # --------------------------------------------------------------------------------------
 
+def empty_rois(F):
+    """Rows of F that carry no fluorescence: all zero or non-finite in every frame (suite2p: every pixel of the
+    ROI overlaps another ROI, so none is used for F)."""
+    F = np.asarray(F)
+    return ~np.any(np.isfinite(F) & (F != 0), axis=1)
+
+
+def roi_qc_reject(criterion, F_rows):
+    """Rejection flag per ROI for one imaging.RoiQCCriterion; F_rows: sequence of 1-D fluorescence traces."""
+    if criterion == "empty_f":
+        return [bool(empty_rois(np.asarray(f, dtype=float)[None, :])[0]) for f in F_rows]
+    raise ValueError(f"unknown ROI QC criterion {criterion!r}")
+
+
 def compute_dff0(F, Fneu, fps, rec, frame_times=None, shutter_starts=None, shutter_ends=None,
                  n_jobs=1, return_intermediates=False):
     """dF/F0 of all masks of one curation under one recipe.
@@ -287,7 +301,7 @@ def compute_dff0(F, Fneu, fps, rec, frame_times=None, shutter_starts=None, shutt
     Returns
     -------
     dict with ``dff`` (float32, n_masks x n_frames), ``f0_median``, ``f0_min``,
-    ``f0_nonpositive`` (per mask), and the resolved ``dark_signal``, ``dark_frame_start``,
+    ``f0_nonpositive`` and ``f_empty`` (per mask; ``dff`` is NaN where ``f_empty``), and the resolved ``dark_signal``, ``dark_frame_start``,
     ``dark_frame_stop``, ``dark_source``. With ``return_intermediates=True`` also ``dF`` (the
     neuropil-corrected, detrended fluorescence) and ``F0`` (the baseline), both full arrays.
     """
@@ -302,6 +316,9 @@ def compute_dff0(F, Fneu, fps, rec, frame_times=None, shutter_starts=None, shutt
     dF = detrend(dF, rec["detrend_method"], fps, rec["detrend_window_s"])
     F0 = baseline(dF, rec, fps, n_jobs=n_jobs)
     nonpos = ~(np.nanmin(F0, axis=1) > 0)
+    # suite2p writes F = 0 in every frame for an ROI whose pixels all overlap other ROIs (overlapping pixels are
+    # excluded from F); its "dF/F0" would be pure neuropil (-a*Fneu) on a negative F0, so it is blanked
+    empty = empty_rois(F)
     floor = rec["f0_floor_method"]
     with np.errstate(divide="ignore", invalid="ignore"):
         if floor in ("none", "flag"):
@@ -318,8 +335,10 @@ def compute_dff0(F, Fneu, fps, rec, frame_times=None, shutter_starts=None, shutt
             dff = (dF - F0) / np.maximum(F0, q)
         else:
             raise ValueError(floor)
+    dff[empty] = np.nan
     out = {
         "dff": dff.astype(np.float32),
+        "f_empty": empty,
         "f0_median": np.nanmedian(F0, axis=1).astype(float),
         "f0_min": np.nanmin(F0, axis=1).astype(float),
         "f0_nonpositive": nonpos,

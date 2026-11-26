@@ -187,6 +187,24 @@ def dark_signal(F, first, stop):
     return float(np.mean(avg[first:stop]))
 
 
+#: A fallback window counts as dark only if its mean is below this fraction of the recording's median level.
+FALLBACK_DARK_FRACTION = 0.25
+
+
+def window_is_dark(F, first, stop, fraction=FALLBACK_DARK_FRACTION):
+    """True when frames [first, stop) are dark: the average trace over all masks is below ``fraction`` of its
+    median over the whole recording.
+
+    Shutter-closed frames sit near the PMT offset (about -12 to +18 in the lab's recordings, against signal
+    levels of 100-4,000), so they pass by a wide margin. Recordings without shutter events have no dark period
+    at frames 12-24: there the window is ordinary signal (0.8-1.2 x the median; 10 production recordings on
+    2026-11-26, dark values 367-3,385 subtracted as if they were dark)."""
+    avg = np.mean(F, axis=0)
+    window = avg[first:stop]
+    level = float(np.median(avg))
+    return bool(window.size) and np.isfinite(level) and level > 0 and float(np.mean(window)) < fraction * level
+
+
 def resolve_dark(rec, F, frame_times=None, shutter_starts=None, shutter_ends=None):
     """Return (dark_value, first, stop, source) for one curation."""
     method = rec["dark_method"]
@@ -202,7 +220,11 @@ def resolve_dark(rec, F, frame_times=None, shutter_starts=None, shutter_ends=Non
         a, b = rec["dark_frame_start"], rec["dark_frame_stop"]
         if a is None or b is None:
             raise ValueError("shutter window unavailable and the recipe names no fallback frames")
-        return dark_signal(F, a, b), a, b, "fallback_frames"
+        if window_is_dark(F, a, b):
+            return dark_signal(F, a, b), a, b, "fallback_frames"
+        # no shutter events and no dark frames where the fallback expects them: no dark signal can be measured.
+        # 0 is close to the measured PMT offsets (-12 to +18); subtracting the signal itself would make F0 <= 0.
+        return 0.0, None, None, "no_dark_frames"
 
 
 # --------------------------------------------------------------------------------------
@@ -279,10 +301,19 @@ def empty_rois(F):
     return ~np.any(np.isfinite(F) & (F != 0), axis=1)
 
 
-def roi_qc_reject(criterion, F_rows):
-    """Rejection flag per ROI for one imaging.RoiQCCriterion; F_rows: sequence of 1-D fluorescence traces."""
+def roi_qc_reject(criterion, F_rows, fluo_channels=None):
+    """Rejection flag per ROI for one imaging.RoiQCCriterion.
+
+    F_rows: sequence of 1-D fluorescence traces; fluo_channels: the Fluorescence.Trace fluo_channel of each row
+    (needed by 'second_channel')."""
     if criterion == "empty_f":
         return [bool(empty_rois(np.asarray(f, dtype=float)[None, :])[0]) for f in F_rows]
+    if criterion == "second_channel":
+        if fluo_channels is None or len(fluo_channels) != len(F_rows):
+            raise ValueError("'second_channel' needs the fluo_channel of every row")
+        # Fluorescence stores suite2p's F as fluo_channel 0 (the functional channel) and F_chan2, the same masks
+        # read out in the other channel, as fluo_channel 1. Those rows are not functional cells.
+        return [int(c) != 0 for c in fluo_channels]
     raise ValueError(f"unknown ROI QC criterion {criterion!r}")
 
 

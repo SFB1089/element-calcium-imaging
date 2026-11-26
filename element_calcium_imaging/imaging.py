@@ -847,6 +847,8 @@ class RoiQCCriterion(dj.Lookup):
     contents = [
         ("empty_f", "F is 0 (or non-finite) in every frame: suite2p leaves pixels shared with other ROIs out of F, "
                     "so an ROI whose pixels all overlap others has no fluorescence; derived traces are neuropil only"),
+        ("second_channel", "fluo_channel 1 = suite2p F_chan2: the masks read out in the second, non-functional "
+                           "channel of a two-channel recording; not functional cells (found 2026-11-26: 3 scans)"),
     ]
 
 
@@ -871,7 +873,7 @@ class RoiQC(dj.Computed):
 
     def make(self, key):
         keys, F = (Fluorescence.Trace & key).fetch("KEY", "fluorescence", order_by="mask, fluo_channel")
-        bad = dff.roi_qc_reject(key["roi_qc_criterion"], F)
+        bad = dff.roi_qc_reject(key["roi_qc_criterion"], F, [k["fluo_channel"] for k in keys])
         self.insert1({**key, "n_rois": len(keys), "n_rejected": int(sum(bad))})
         self.Rejected.insert({**key, **k} for k, b in zip(keys, bad) if b)
 
@@ -1029,7 +1031,7 @@ class Dff0(dj.Computed):
     dark_signal          : float          # [a.u.] subtracted from F and Fneu
     dark_frame_start=null: int            # first frame of the dark window actually used
     dark_frame_stop=null : int            # last frame (exclusive)
-    dark_source          : varchar(16)    # 'shutter' | 'frames' | 'fallback_frames' (no usable shutter events) | 'none'
+    dark_source          : varchar(16)    # 'shutter' | 'frames' | 'fallback_frames' (no shutter events; frames 12-24 dark) | 'no_dark_frames' (neither: dark = 0) | 'none'
     n_f0_nonpositive     : int            # masks whose F0 is <= 0 somewhere
     element_version      : varchar(32)    # dff.element_version(): commit + hash of imaging.py/dff.py
     compute_seconds      : float

@@ -70,11 +70,35 @@ def test_shutter_window_uses_nearest_frames_and_margin():
 
 
 def test_missing_shutter_falls_back_and_says_so():
-    F = np.ones((3, 50))
+    F = np.full((3, 50), 500.0)
+    F[:, 12:24] = 1.0                            # the old protocol: shutter closed at frames 12-24
     rec = D.normalise_recipe(_recipe(dark_method="shutter", dark_margin_s=0.09,
                                      dark_frame_start=12, dark_frame_stop=24))
     v, a, b, src = D.resolve_dark(rec, F, np.arange(50) / 10, [1.0], [1.5])
     assert (a, b, src) == (12, 24, "fallback_frames") and v == 1.0
+
+
+def test_fallback_without_dark_frames_uses_zero_and_says_so():
+    # 2026-11-26: recordings without shutter events have signal, not dark, at frames 12-24
+    F = np.full((3, 50), 1000.0)
+    rec = D.normalise_recipe(_recipe(dark_method="shutter", dark_margin_s=0.09,
+                                     dark_frame_start=12, dark_frame_stop=24))
+    v, a, b, src = D.resolve_dark(rec, F, np.arange(50) / 10, [1.0], [1.5])
+    assert (v, a, b, src) == (0.0, None, None, "no_dark_frames")
+
+
+def test_window_is_dark_threshold():
+    F = np.full((2, 100), 400.0)
+    F[:, 10:20] = 20.0                           # a PMT offset of +20 is still dark against a 400 signal
+    assert D.window_is_dark(F, 10, 20) and not D.window_is_dark(F, 30, 40)
+    assert not D.window_is_dark(np.zeros((2, 100)), 10, 20)          # no level to compare with
+
+
+def test_frames_recipe_keeps_the_old_lab_behaviour():
+    # dark_method 'frames' reproduces the old lab code: frames 12-24, unchecked
+    F = np.full((3, 50), 1000.0)
+    rec = D.normalise_recipe(_recipe(dark_method="frames", dark_frame_start=12, dark_frame_stop=24))
+    assert D.resolve_dark(rec, F) == (1000.0, 12, 24, "frames")
 
 
 def test_shutter_without_fallback_raises():
@@ -209,3 +233,12 @@ def test_roi_qc_reject_empty_f_and_unknown_criterion():
     assert D.roi_qc_reject("empty_f", rows) == [True, False, True]
     with pytest.raises(ValueError, match="unknown ROI QC criterion"):
         D.roi_qc_reject("kurtosis", rows)
+
+
+def test_roi_qc_reject_second_channel():
+    F = [np.ones(10)] * 4
+    assert D.roi_qc_reject("second_channel", F, [0, 1, 0, 1]) == [False, True, False, True]
+    assert D.roi_qc_reject("second_channel", F[:2], [0, 0]) == [False, False]
+    with pytest.raises(ValueError, match="fluo_channel"):
+        D.roi_qc_reject("second_channel", F)
+    assert D.roi_qc_reject("empty_f", [np.zeros(5), np.ones(5)], [0, 1]) == [True, False]   # extra argument ignored
